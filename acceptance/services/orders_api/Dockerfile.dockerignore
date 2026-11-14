@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+**/node_modules
+**/dist
+**/__pycache__
+adaptirate
+dashboard
+bench
+docs
+docker
+examples
+sdk-java
+acceptance/.run
