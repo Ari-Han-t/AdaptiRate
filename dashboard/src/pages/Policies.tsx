@@ -264,7 +264,7 @@ function PolicyCard({ policy, canManage, onEdit, onChanged }: { policy: Policy; 
             <h3 className="truncate text-base font-semibold">{policy.name}</h3>
             <Badge tone="accent">{ALGORITHM_LABEL[policy.algorithm]}</Badge>
             <Badge tone="idle">{SCOPE_LABEL[policy.scope]}</Badge>
-            {policy.adaptive && <Badge tone="violet">Adaptive</Badge>}
+            {policy.adaptive && <Badge tone="accent">Adaptive</Badge>}
             {policy.provider && <Badge tone="idle">{policy.provider}</Badge>}
             {policy.paused_ms > 0 && <Badge tone="bad">Paused {duration(policy.paused_ms / 1000)}</Badge>}
           </div>

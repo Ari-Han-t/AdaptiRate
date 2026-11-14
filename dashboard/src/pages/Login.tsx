@@ -1,4 +1,3 @@
-import { motion } from 'framer-motion'
 import { Activity } from 'lucide-react'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
@@ -27,13 +26,13 @@ export function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
-      <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }} className="w-full max-w-sm">
+      <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
           <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-accent">
             <Activity size={24} className="text-white" strokeWidth={2.6} />
           </div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            Adapti<span className="text-accent">Rate</span>
+            AdaptiRate
           </h1>
           <p className="mt-1 text-sm text-ink-soft">Sign in to manage rate limits</p>
         </div>
@@ -51,7 +50,7 @@ export function LoginPage() {
           </Button>
         </form>
         <p className="mt-4 text-center text-xs text-ink-faint">The first admin account is created from AR_BOOTSTRAP_ADMIN_EMAIL and AR_BOOTSTRAP_ADMIN_PASSWORD.</p>
-      </motion.div>
+      </div>
     </div>
   )
 }

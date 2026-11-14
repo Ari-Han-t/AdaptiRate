@@ -1,6 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion'
-import { Activity, Ban, CheckCircle2, Cpu, Gauge, Hourglass, Layers, MemoryStick, PauseCircle, Timer, Zap } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
+import { Gauge, Hourglass, PauseCircle } from 'lucide-react'
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { HealthRing, Sparkline, TrafficChart, COLORS } from '../components/charts'
@@ -9,21 +7,16 @@ import type { PolicyState, ProviderState } from '../lib/api'
 import { ALGORITHM_LABEL, REASON_LABEL, clock, duration, healthTone, ms, num, percent, windowLabel } from '../lib/format'
 import { useLive } from '../lib/live'
 
-function Stat({ label, value, unit, icon: Icon, tint, spark, sparkColor }: { label: string; value: string; unit?: string; icon: LucideIcon; tint: string; spark?: number[]; sparkColor?: string }) {
+function Stat({ label, value, unit, spark, sparkColor }: { label: string; value: string; unit?: string; spark?: number[]; sparkColor?: string }) {
   return (
-    <motion.div layout className="card flex flex-col justify-between p-4">
-      <div className="flex items-start justify-between">
-        <p className="text-xs font-medium text-ink-soft">{label}</p>
-        <div className={cn('rounded-lg border border-line bg-raised p-1.5', tint)}>
-          <Icon size={15} />
-        </div>
-      </div>
+    <div className="card flex flex-col justify-between p-4">
+      <p className="text-xs font-medium text-ink-soft">{label}</p>
       <p className="mt-2 text-[26px] font-semibold leading-none tracking-tight tabular-nums">
         {value}
         {unit && <span className="ml-1 text-sm font-normal text-ink-faint">{unit}</span>}
       </p>
       <div className="mt-2 h-9">{spark && spark.length > 1 && <Sparkline values={spark} color={sparkColor} />}</div>
-    </motion.div>
+    </div>
   )
 }
 
@@ -46,7 +39,7 @@ function PolicyRow({ policy }: { policy: PolicyState }) {
         <span className="font-medium text-ink">{policy.name}</span>
         <Badge tone="idle">{ALGORITHM_LABEL[policy.algorithm]}</Badge>
         {!policy.enabled && <Badge tone="warn">Disabled</Badge>}
-        {policy.adaptive ? <Badge tone="violet">Adaptive</Badge> : <Badge tone="idle">Fixed</Badge>}
+        {policy.adaptive ? <Badge tone="accent">Adaptive</Badge> : <Badge tone="idle">Fixed</Badge>}
         {policy.paused_ms > 0 && (
           <Badge tone="bad">
             <PauseCircle size={11} /> Paused {duration(policy.paused_ms / 1000)}
@@ -119,7 +112,7 @@ function ProviderRow({ provider }: { provider: ProviderState }) {
               {num(provider.remaining_tokens)} / {num(provider.limit_tokens)}
             </span>
           </div>
-          <Meter value={provider.remaining_tokens} max={provider.limit_tokens!} tone="violet" />
+          <Meter value={provider.remaining_tokens} max={provider.limit_tokens!} tone="accent" />
         </div>
       )}
       {!hasRequests && !hasTokens && provider.remaining_requests !== null && (
@@ -156,14 +149,14 @@ export function DashboardPage() {
       <PageHeader title="Dashboard" subtitle="Live traffic, adaptive limits and system health" />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 2xl:grid-cols-8">
-        <Stat label="Requests / sec" value={num(snapshot.requests_per_second, 1)} icon={Activity} tint="text-accent-strong" spark={sparks.total} sparkColor={COLORS.allowed} />
-        <Stat label="Allowed / sec" value={num(snapshot.allowed_per_second, 1)} icon={CheckCircle2} tint="text-good" spark={sparks.allowed} sparkColor={COLORS.good} />
-        <Stat label="Blocked / sec" value={num(snapshot.blocked_per_second, 1)} icon={Ban} tint="text-bad" spark={sparks.blocked} sparkColor={COLORS.blocked} />
-        <Stat label="Success rate (1m)" value={percent(snapshot.success_rate, 1)} icon={Zap} tint="text-violet" />
-        <Stat label="CPU" value={snapshot.cpu_percent === null ? '–' : snapshot.cpu_percent.toFixed(0)} unit="%" icon={Cpu} tint="text-warn" />
-        <Stat label="Memory" value={snapshot.memory_percent === null ? '–' : snapshot.memory_percent.toFixed(0)} unit="%" icon={MemoryStick} tint="text-accent-strong" />
-        <Stat label="Upstream p95" value={ms(snapshot.latency_p95_ms)} icon={Timer} tint="text-warn" />
-        <Stat label="Queue depth" value={num(snapshot.queue_depth)} icon={Layers} tint="text-violet" />
+        <Stat label="Requests / sec" value={num(snapshot.requests_per_second, 1)} spark={sparks.total} sparkColor={COLORS.allowed} />
+        <Stat label="Allowed / sec" value={num(snapshot.allowed_per_second, 1)} spark={sparks.allowed} sparkColor={COLORS.good} />
+        <Stat label="Blocked / sec" value={num(snapshot.blocked_per_second, 1)} spark={sparks.blocked} sparkColor={COLORS.blocked} />
+        <Stat label="Success rate (1m)" value={percent(snapshot.success_rate, 1)} />
+        <Stat label="CPU" value={snapshot.cpu_percent === null ? '–' : snapshot.cpu_percent.toFixed(0)} unit="%" />
+        <Stat label="Memory" value={snapshot.memory_percent === null ? '–' : snapshot.memory_percent.toFixed(0)} unit="%" />
+        <Stat label="Upstream p95" value={ms(snapshot.latency_p95_ms)} />
+        <Stat label="Queue depth" value={num(snapshot.queue_depth)} />
       </div>
 
       <div className="mt-4 grid gap-4 xl:grid-cols-3">
@@ -248,17 +241,15 @@ export function DashboardPage() {
               <p className="py-6 text-center text-sm text-ink-faint">Waiting for traffic…</p>
             ) : (
               <ul className="space-y-1.5">
-                <AnimatePresence initial={false}>
-                  {events.slice(0, 9).map((event) => (
-                    <motion.li key={event.id} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} className="flex items-center gap-2.5 text-xs">
+                {events.slice(0, 9).map((event) => (
+                    <li key={event.id} className="flex items-center gap-2.5 text-xs">
                       <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', event.allowed ? 'bg-good' : 'bg-bad')} />
                       <span className="w-14 shrink-0 tabular-nums text-ink-faint">{clock(Number(event.ts))}</span>
                       <span className="truncate text-ink">{event.subject}</span>
                       <span className="ml-auto shrink-0 text-ink-faint">{event.policy}</span>
                       <span className={cn('w-24 shrink-0 text-right', event.allowed ? 'text-ink-faint' : 'text-bad')}>{REASON_LABEL[event.reason] ?? event.reason}</span>
-                    </motion.li>
+                    </li>
                   ))}
-                </AnimatePresence>
               </ul>
             )}
           </Card>

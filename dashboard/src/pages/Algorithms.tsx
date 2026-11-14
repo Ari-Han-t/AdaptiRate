@@ -1,4 +1,3 @@
-import { motion } from 'framer-motion'
 import { Droplets, Layers, Shuffle, SlidersHorizontal, Sparkles, Timer } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useState } from 'react'
@@ -73,10 +72,10 @@ export function AlgorithmsPage() {
         <Spinner />
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {algorithms.data.map((algorithm, index) => {
+          {algorithms.data.map((algorithm) => {
             const Icon = ICON[algorithm.id]
             return (
-              <motion.div key={algorithm.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.04 }}>
+              <div key={algorithm.id}>
                 <Card className="h-full">
                   <div className="flex items-start justify-between">
                     <div className="rounded-lg bg-accent/8 p-2.5 text-accent-strong">
@@ -99,7 +98,7 @@ export function AlgorithmsPage() {
                     </div>
                   </dl>
                 </Card>
-              </motion.div>
+              </div>
             )
           })}
         </div>

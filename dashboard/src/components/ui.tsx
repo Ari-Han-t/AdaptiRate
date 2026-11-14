@@ -26,12 +26,11 @@ export function CardTitle({ children, hint, action }: { children: ReactNode; hin
   )
 }
 
-export function PageHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
+export function PageHeader({ title, action }: { title: string; subtitle?: string; action?: ReactNode }) {
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-        <p className="mt-1 text-sm text-ink-soft">{subtitle}</p>
       </div>
       {action}
     </div>
@@ -150,11 +149,10 @@ export function Badge({ tone = 'idle', children, className }: { tone?: Tone; chi
   )
 }
 
-export function Dot({ tone, pulse }: { tone: Tone; pulse?: boolean }) {
+export function Dot({ tone }: { tone: Tone; pulse?: boolean }) {
   const color = { good: 'bg-good', warn: 'bg-warn', bad: 'bg-bad', accent: 'bg-accent', violet: 'bg-violet', idle: 'bg-ink-faint' }[tone]
   return (
     <span className="relative inline-flex h-2 w-2">
-      {pulse && <span className={cn('absolute inline-flex h-full w-full animate-ping rounded-full opacity-60', color)} />}
       <span className={cn('relative inline-flex h-2 w-2 rounded-full', color)} />
     </span>
   )

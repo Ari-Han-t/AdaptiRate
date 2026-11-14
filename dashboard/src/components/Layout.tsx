@@ -39,7 +39,7 @@ function Brand() {
         <Activity size={17} className="text-white" strokeWidth={2.6} />
       </div>
       <span className="text-[17px] font-semibold tracking-tight">
-        Adapti<span className="text-accent">Rate</span>
+        AdaptiRate
       </span>
     </div>
   )
@@ -64,11 +64,7 @@ function Navigation({ onNavigate }: { onNavigate?: () => void }) {
           {({ isActive }) => (
             <>
               {isActive && (
-                <motion.span
-                  layoutId="nav-active"
-                  className="absolute inset-0 rounded-lg bg-accent/8"
-                  transition={{ type: 'spring', stiffness: 500, damping: 38 }}
-                />
+                <span className="absolute inset-0 rounded-lg bg-accent/8" />
               )}
               <Icon size={17} className={cn('relative', isActive ? 'text-accent-strong' : 'text-ink-faint group-hover:text-ink-soft')} />
               <span className="relative">{label}</span>
@@ -169,9 +165,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <StatusBar />
         </header>
         <main className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-6 sm:px-8 sm:py-8">
-          <motion.div key={location.pathname} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22 }}>
-            {children}
-          </motion.div>
+          {children}
         </main>
       </div>
     </div>
