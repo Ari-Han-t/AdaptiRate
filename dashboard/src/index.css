@@ -1,0 +1,68 @@
+@import '@fontsource-variable/inter';
+@import 'tailwindcss';
+
+/* Light, flat theme: white surfaces, neutral greys, one accent colour. No gradients. */
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+
+  --color-canvas: #f7f8fa;
+  --color-panel: #ffffff;
+  --color-raised: #f2f4f7;
+  --color-line: #e4e7ec;
+  --color-line-strong: #cfd4dc;
+
+  --color-ink: #101828;
+  --color-ink-soft: #475467;
+  --color-ink-faint: #667085;
+
+  --color-accent: #2563eb;
+  --color-accent-strong: #1d4ed8;
+  --color-violet: #6d28d9;
+  --color-good: #15803d;
+  --color-warn: #b45309;
+  --color-bad: #d92d20;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+    font-feature-settings: 'cv11', 'ss01', 'tnum';
+  }
+  ::selection {
+    background: rgb(37 99 235 / 0.18);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border-radius: 999px;
+    border: 2px solid var(--color-canvas);
+  }
+}
+
+/* The one surface style: a white card with a hairline border and a faint shadow. */
+@utility card {
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 0.04);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "adaptirate-example-express",
+  "private": true,
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "@adaptirate/sdk": "file:../../sdk-node",
+    "express": "^4.21.0"
+  }
+}

@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: adaptirate
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+    # If AR_METRICS_TOKEN is set on the API, add:
+    # authorization:
+    #   credentials: <the token>

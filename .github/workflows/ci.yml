@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Throwaway values for the CI stack only.
+  AR_JWT_SECRET: ci-only-secret-ci-only-secret-ci-only-secret-0123456789
+  AR_BOOTSTRAP_ADMIN_EMAIL: admin@ci.local
+  AR_BOOTSTRAP_ADMIN_PASSWORD: ci-only-admin-password
+  POSTGRES_PASSWORD: ci-only-postgres-password
+
+jobs:
+  server:
+    name: Server (lint, types, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the dev image
+        run: docker compose --profile dev build dev
+      - name: Lint
+        run: docker compose --profile dev run --rm dev sh -c "ruff check . && ruff format --check ."
+      - name: Type check
+        run: docker compose --profile dev run --rm dev mypy app
+      - name: Migrations apply and match the models
+        run: >
+          docker compose --profile dev run --rm
+          -e AR_DATABASE_URL=postgresql+asyncpg://adaptirate:${POSTGRES_PASSWORD}@postgres:5432/adaptirate
+          dev sh -c "alembic upgrade head && alembic check"
+      - name: Tests
+        run: docker compose --profile dev run --rm dev pytest -o addopts=""
+
+  dashboard:
+    name: Dashboard (types, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  sdks:
+    name: SDKs against a live server
+    runs-on: ubuntu-latest
+    env:
+      ADAPTIRATE_TEST_URL: http://127.0.0.1:8000
+      ADAPTIRATE_TEST_ADMIN_EMAIL: admin@ci.local
+      ADAPTIRATE_TEST_ADMIN_PASSWORD: ci-only-admin-password
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start AdaptiRate
+        run: docker compose up -d --build --wait redis postgres api worker
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python SDK
+        working-directory: sdk-python
+        run: |
+          pip install -e ".[dev]"
+          ruff check . && ruff format --check .
+          mypy adaptirate
+          pytest -o addopts=""
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Node SDK
+        working-directory: sdk-node
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      - name: Java SDK
+        working-directory: sdk-java
+        run: mvn -B -q verify
+      - name: Server logs on failure
+        if: failure()
+        run: docker compose logs --tail 200 api worker
