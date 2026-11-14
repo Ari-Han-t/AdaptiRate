@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from importlib import resources
 
@@ -141,28 +141,47 @@ class LimiterEngine:
         results = await pipe.execute()
         return [self._decision(raw) for raw in results]
 
+    @staticmethod
+    def _capacity(check: Check, effective_limit: int) -> int:
+        """The most one request can ever be granted, mirroring each Lua script."""
+        if check.algorithm is Algorithm.TOKEN_BUCKET:
+            return effective_limit + check.burst
+        if check.algorithm is Algorithm.LEAKY_BUCKET:
+            return check.burst + 1
+        if check.algorithm is Algorithm.ADAPTIVE_HYBRID:
+            bucket = check.burst if check.burst > 0 else max(1, -(-effective_limit // 5))
+            return min(effective_limit, bucket)
+        return effective_limit
+
     async def lease(self, check: Check) -> tuple[int, Decision]:
-        """Grant up to check.cost units. Falls back to whatever is left when the full
-        amount does not fit. Unused leased units are simply lost, so a lease can
-        under-admit but never over-admit."""
+        """Grant up to check.cost units, falling back to whatever fits.
+
+        A request larger than the policy can ever grant is clamped to its capacity
+        rather than refused, so an SDK configured with a generous lease size still works
+        against a small or adaptively reduced limit. Unused leased units are simply
+        lost: a lease can under-admit but never over-admit.
+        """
         decision = await self.check(check)
         if decision.allowed:
             return check.cost, decision
-        if decision.reason == "paused" or decision.remaining <= 0:
+        if decision.reason == "paused":
             return 0, decision
-        partial = Check(
-            policy_id=check.policy_id,
-            policy_name=check.policy_name,
-            algorithm=check.algorithm,
-            limit=check.limit,
-            window_ms=check.window_ms,
-            burst=check.burst,
-            subject=check.subject,
-            cost=min(decision.remaining, check.cost),
-            record=check.record,
-        )
-        second = await self.check(partial)
-        return (partial.cost if second.allowed else 0), second
+
+        if decision.reason == "too_large":
+            fit = min(check.cost - 1, self._capacity(check, decision.limit))
+        else:
+            fit = min(decision.remaining, check.cost)
+        if fit <= 0:
+            return 0, decision
+
+        second = await self.check(replace(check, cost=fit))
+        if second.allowed:
+            return fit, second
+        # The clamped amount is possible in principle but not right now; take what is left.
+        if 0 < second.remaining < fit:
+            third = await self.check(replace(check, cost=second.remaining))
+            return (second.remaining if third.allowed else 0), third
+        return 0, second
 
     async def reset(self, policy_id: str) -> int:
         """Delete all limiter state for a policy. Returns the number of keys removed."""

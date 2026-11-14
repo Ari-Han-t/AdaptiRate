@@ -218,3 +218,32 @@ async def test_long_subject_is_hashed_not_truncated(engine: LimiterEngine, uniqu
     assert (await engine.check(first)).allowed
     assert (await engine.check(second)).allowed
     assert not (await engine.check(first)).allowed
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "limit", "burst", "expected"),
+    [
+        (Algorithm.TOKEN_BUCKET, 20, 0, 20),
+        (Algorithm.TOKEN_BUCKET, 20, 5, 25),
+        (Algorithm.FIXED_WINDOW, 20, 0, 20),
+        (Algorithm.SLIDING_WINDOW, 20, 0, 20),
+        (Algorithm.LEAKY_BUCKET, 20, 3, 4),
+        (Algorithm.ADAPTIVE_HYBRID, 20, 0, 4),
+    ],
+)
+async def test_lease_larger_than_capacity_is_clamped_not_refused(
+    engine: LimiterEngine, unique: str, algorithm: Algorithm, limit: int, burst: int, expected: int
+):
+    """An SDK asking for 50 tokens from a small policy must get what fits, not nothing."""
+    check = make(unique, algorithm, limit=limit, burst=burst, cost=50)
+    granted, decision = await engine.lease(check)
+    assert granted == expected
+    assert decision.allowed
+    again, _ = await engine.lease(check)
+    assert again == 0, "the policy is now exhausted; a second lease must not over-admit"
+
+
+async def test_lease_respects_an_adaptively_reduced_limit(engine: LimiterEngine, unique: str, redis: Redis):
+    await redis.set(keys.multiplier_key(unique), "0.25")
+    granted, decision = await engine.lease(make(unique, Algorithm.TOKEN_BUCKET, limit=40, cost=100))
+    assert (granted, decision.limit) == (10, 10)
