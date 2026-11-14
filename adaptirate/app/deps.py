@@ -34,6 +34,8 @@ class Principal:
     scopes: frozenset[str]
     role: str | None = None
     policy_ids: frozenset[str] = frozenset()
+    # When a user's access token expires (epoch seconds). None for API keys.
+    expires_at: float | None = None
 
     def can_use_policy(self, policy_id: str) -> bool:
         return not self.policy_ids or policy_id in self.policy_ids
@@ -104,6 +106,7 @@ def authenticate(request: Request) -> Principal:
         label=str(payload.get("email", "")),
         scopes=ROLE_SCOPES.get(role, frozenset()),
         role=role,
+        expires_at=float(payload["exp"]),
     )
 
 

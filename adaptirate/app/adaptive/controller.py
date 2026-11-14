@@ -171,11 +171,25 @@ def provider_cap(
     window_seconds: float,
     base_limit: int,
     safety_margin: float,
+    quota_limit: float | None = None,
+    continuous: bool = False,
 ) -> float | None:
-    """Multiplier ceiling that spreads a provider's remaining quota over the time
-    until it resets. None when the provider has not told us enough to pace."""
+    """Multiplier ceiling that paces calls against a provider's quota. None when the
+    provider has not told us enough to pace.
+
+    Providers mean two different things by their reset time:
+
+    - Fixed window (GitHub): nothing comes back until the reset, so what remains has
+      to last until then: remaining / time to reset.
+    - Continuous refill (OpenAI, Anthropic, Groq): the reset time is when the quota
+      will be full again, and it refills steadily until then. Over that period the
+      usable amount is what remains plus what refills, i.e. the whole quota:
+      limit / time to reset. Pacing such a provider by "remaining" alone stops every
+      call whenever it reports zero, long after its own Retry-After has passed.
+    """
     if remaining is None or reset_in_seconds is None:
         return None
-    usable = max(0.0, remaining * (1.0 - safety_margin))
+    budget = quota_limit if continuous and quota_limit is not None else remaining
+    usable = max(0.0, budget * (1.0 - safety_margin))
     rate_per_second = usable / max(reset_in_seconds, 1.0)
     return max(0.0, rate_per_second * window_seconds / base_limit)

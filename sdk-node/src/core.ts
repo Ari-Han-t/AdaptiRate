@@ -8,6 +8,24 @@ export const LATENCY_BOUNDS_MS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500
 
 export type FailMode = 'open' | 'closed' | 'local'
 
+/**
+ * Per-bucket maps are capped so a per-IP policy on a public API cannot grow them forever.
+ * Over the cap, idle entries go first, then the oldest half (Maps keep insertion order).
+ */
+export const MAX_BUCKETS = 10_000
+
+export function evictToBound<V>(entries: Map<string, V>, isIdle: (key: string, value: V) => boolean): void {
+  if (entries.size <= MAX_BUCKETS) return
+  for (const [key, value] of entries) if (isIdle(key, value)) entries.delete(key)
+  if (entries.size > MAX_BUCKETS) {
+    let drop = Math.floor(entries.size / 2)
+    for (const key of entries.keys()) {
+      if (drop-- <= 0) break
+      entries.delete(key)
+    }
+  }
+}
+
 export interface Subject {
   key?: string
   user?: string
@@ -27,6 +45,8 @@ export interface Decision {
   policy: string
   /** "server", "lease" (decided locally from leased tokens) or "fallback" (server unreachable). */
   source: 'server' | 'lease' | 'fallback'
+  /** Policy window reported by the server; absent from older servers. */
+  windowMs?: number
 }
 
 /** Standard rate-limit response headers for a decision. */
@@ -70,10 +90,11 @@ export interface WireDecision {
   reset_after_ms: number
   reason: string
   policy: string
+  window_ms?: number
 }
 
 export function fromWire(body: WireDecision, source: Decision['source'] = 'server'): Decision {
-  return {
+  const decision: Decision = {
     allowed: Boolean(body.allowed),
     limit: Number(body.limit),
     remaining: Number(body.remaining),
@@ -83,6 +104,9 @@ export function fromWire(body: WireDecision, source: Decision['source'] = 'serve
     policy: String(body.policy),
     source,
   }
+  const windowMs = Number(body.window_ms)
+  if (windowMs > 0) decision.windowMs = windowMs
+  return decision
 }
 
 export function subjectPayload(policy: string, subject: Subject): Record<string, string> {
@@ -153,6 +177,14 @@ export class LeasePool {
       lease = { tokens: 0, expiresAt: 0, blockedUntil: 0, limit: 0, last: null }
       this.leases.set(bucket, lease)
     }
+    const result = this.apply(lease, granted, cost, ttlMs, decision, now)
+    // Dropping a lease only costs an extra server round trip. Evicting after the update keeps
+    // the lease just stored out of the idle set.
+    evictToBound(this.leases, (_, entry) => now >= entry.expiresAt && now >= entry.blockedUntil)
+    return result
+  }
+
+  private apply(lease: Lease, granted: number, cost: number, ttlMs: number, decision: Decision, now: number): Decision {
     lease.limit = decision.limit
     lease.last = decision
     lease.expiresAt = now + ttlMs / 1000
@@ -192,9 +224,14 @@ export class LocalFallback {
 
   learn(decision: Decision): void {
     if (decision.source !== 'server' || decision.limit <= 0) return
+    if (decision.windowMs !== undefined && decision.windowMs > 0) {
+      // The server states the window, so no guessing.
+      this.known.set(decision.policy, { limit: decision.limit, window: decision.windowMs / 1000 })
+      return
+    }
     const window = decision.resetAfterMs > 0 ? decision.resetAfterMs / 1000 : 0
     const previous = this.known.get(decision.policy)
-    // reset_after shrinks as a window elapses; the largest seen approximates the window.
+    // Older servers: reset_after shrinks as a window elapses; the largest seen approximates the window.
     this.known.set(decision.policy, { limit: decision.limit, window: Math.max(window, previous?.window ?? 0) || 1 })
   }
 
@@ -210,11 +247,21 @@ export class LocalFallback {
     const tokens = Math.min(known.limit, state.tokens + (now - state.stamp) * rate)
     if (tokens >= cost) {
       this.buckets.set(bucket, { tokens: tokens - cost, stamp: now })
+      this.evict(now)
       return { ...base, allowed: true, limit: known.limit, remaining: Math.floor(tokens - cost), retryAfterMs: 0, reason: 'fail_local' }
     }
     this.buckets.set(bucket, { tokens, stamp: now })
+    this.evict(now)
     const waitMs = Math.floor(((cost - tokens) / rate) * 1000) + 1
     return { ...base, allowed: false, limit: known.limit, retryAfterMs: waitMs, resetAfterMs: waitMs, reason: 'fail_local' }
+  }
+
+  /** A dropped bucket restarts full, which errs toward availability: an outage never denies more than it would have. */
+  private evict(now: number): void {
+    evictToBound(this.buckets, (bucket, state) => {
+      const known = this.known.get(bucket.split('\u0000', 1)[0] ?? '')
+      return !known || state.tokens + ((now - state.stamp) * known.limit) / known.window >= known.limit
+    })
   }
 }
 

@@ -2,6 +2,7 @@ package io.adaptirate.spring;
 
 import io.adaptirate.AdaptiveLimiter;
 import io.adaptirate.Decision;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -35,6 +36,12 @@ public class AdaptiveRateLimitInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws IOException {
+        // Spring calls preHandle again on the async dispatch of a Callable/DeferredResult handler.
+        // Charging again would double-count the request and leak an in-flight slot, because
+        // afterCompletion runs once.
+        if (request.getDispatcherType() != DispatcherType.REQUEST) {
+            return true;
+        }
         AdaptiveRateLimit limit = annotationFor(handler);
         if (limit == null) {
             return true;

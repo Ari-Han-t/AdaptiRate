@@ -1,10 +1,12 @@
 package io.adaptirate.spring;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -17,6 +19,7 @@ import java.net.InetSocketAddress;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +33,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -105,6 +109,12 @@ class SpringIntegrationTest {
         @AdaptiveRateLimit("orders")
         String broken() {
             throw new IllegalStateException("database down");
+        }
+
+        @GetMapping("/slow")
+        @AdaptiveRateLimit("orders")
+        Callable<String> slow() {
+            return () -> "slow";
         }
 
         @GetMapping("/open")
@@ -183,5 +193,15 @@ class SpringIntegrationTest {
         assertThat(reports).hasSize(1);
         assertThat(reports.get(0)).containsEntry("policy", "orders").containsEntry("requests", 2).containsEntry("errors", 1)
                 .containsEntry("in_flight", 0);
+    }
+
+    @Test
+    void asyncHandlersAreChargedAndTrackedOnce() throws Exception {
+        MvcResult started = mvc.perform(get("/slow")).andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(asyncDispatch(started)).andExpect(status().isOk()).andExpect(content().string("slow"));
+        assertThat(evaluations).as("the async dispatch must not charge the request again").hasSize(1);
+        limiter.flush();
+        assertThat(reports).hasSize(1);
+        assertThat(reports.get(0)).containsEntry("requests", 1).containsEntry("in_flight", 0);
     }
 }

@@ -107,8 +107,8 @@ class PolicyBase(Strict):
     scope: Scope = Scope.CUSTOM
     rules: list[RuleIn] = Field(default_factory=list, max_length=200)
     adaptive: bool = True
-    min_limit: int | None = Field(default=None, ge=1)
-    max_limit: int | None = Field(default=None, ge=1)
+    min_limit: int | None = Field(default=None, ge=1, le=1_000_000_000)
+    max_limit: int | None = Field(default=None, ge=1, le=1_000_000_000)
     target_latency_ms: float | None = Field(default=None, gt=0, le=600_000)
     provider: (
         Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=r"^[a-z0-9_\-]+$")] | None
@@ -145,8 +145,8 @@ class PolicyUpdate(Strict):
     scope: Scope | None = None
     rules: list[RuleIn] | None = Field(default=None, max_length=200)
     adaptive: bool | None = None
-    min_limit: int | None = Field(default=None, ge=1)
-    max_limit: int | None = Field(default=None, ge=1)
+    min_limit: int | None = Field(default=None, ge=1, le=1_000_000_000)
+    max_limit: int | None = Field(default=None, ge=1, le=1_000_000_000)
     target_latency_ms: float | None = Field(default=None, gt=0, le=600_000)
     provider: (
         Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=r"^[a-z0-9_\-]+$")] | None
@@ -246,6 +246,8 @@ class EvaluateResponse(BaseModel):
     reset_after_ms: int
     reason: str
     policy: str
+    # The window the limit applies over, so an SDK's offline fallback need not guess it.
+    window_ms: int
 
 
 class BatchEvaluateResponse(BaseModel):
@@ -301,6 +303,9 @@ class CustomProviderIn(Strict):
     reset_tokens: str | None = Field(default=None, max_length=128)
     # How reset headers are expressed.
     reset_format: Literal["seconds", "epoch", "duration", "rfc3339"] = "seconds"
+    # "continuous": the quota refills steadily and the reset header says when it is full
+    # again (OpenAI-style). "window": nothing comes back until the reset (GitHub-style).
+    refill: Literal["continuous", "window"] = "continuous"
 
 
 class Page(BaseModel):

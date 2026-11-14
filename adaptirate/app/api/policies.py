@@ -10,7 +10,16 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from ..deps import CacheDep, EngineDep, ManagePrincipal, ReadPrincipal, RedisDep, SessionDep, client_ip
+from ..deps import (
+    CacheDep,
+    EngineDep,
+    ManagePrincipal,
+    Principal,
+    ReadPrincipal,
+    RedisDep,
+    SessionDep,
+    client_ip,
+)
 from ..limiter import keys
 from ..limiter.cache import publish_invalidation
 from ..limiter.engine import ALGORITHM_INFO, Algorithm
@@ -51,6 +60,11 @@ async def _get(session: SessionDep, policy_id: str) -> Policy:
     return row
 
 
+def _require_access(principal: Principal, row: Policy) -> None:
+    if not principal.can_use_policy(row.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"This API key cannot manage policy '{row.name}'")
+
+
 def _validate_bounds(row: Policy) -> None:
     if row.min_limit is not None and row.min_limit > row.limit:
         raise HTTPException(422, "min_limit cannot exceed limit")
@@ -73,6 +87,10 @@ async def create_policy(
     cache: CacheDep,
     request: Request,
 ) -> PolicyOut:
+    if principal.policy_ids:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "A key restricted to certain policies cannot create policies"
+        )
     row = Policy(**body.model_dump(mode="json"))
     session.add(row)
     try:
@@ -113,6 +131,7 @@ async def update_policy(
     request: Request,
 ) -> PolicyOut:
     row = await _get(session, policy_id)
+    _require_access(principal, row)
     changes: dict[str, Any] = body.model_dump(mode="json", exclude_unset=True)
     non_nullable = {
         "description",
@@ -159,6 +178,7 @@ async def delete_policy(
     request: Request,
 ) -> None:
     row = await _get(session, policy_id)
+    _require_access(principal, row)
     await session.delete(row)
     audit.record(
         session,
@@ -191,6 +211,7 @@ async def reset_policy(
     request: Request,
 ) -> dict[str, int]:
     row = await _get(session, policy_id)
+    _require_access(principal, row)
     removed = await engine.reset(policy_id)
     await redis.unlink(keys.pause_key(policy_id))
     audit.record(

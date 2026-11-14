@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
-import { LATENCY_BOUNDS_MS, LeasePool, LocalFallback, Reporter, fromWire } from '../src/core'
+import { LATENCY_BOUNDS_MS, LeasePool, LocalFallback, MAX_BUCKETS, Reporter, fromWire } from '../src/core'
 import { adaptiveLimiter } from '../src/express'
 import { AdaptiRateError, AdaptiveLimiter, RateLimitExceededError, decisionHeaders } from '../src/index'
 import type { LimiterOptions } from '../src/index'
@@ -342,4 +342,57 @@ test('express middleware surfaces configuration errors', async () => {
     received = error
   })
   assert.ok(received instanceof AdaptiRateError)
+})
+
+test('local fallback uses the window the server reports', () => {
+  let now = 0
+  const fallback = new LocalFallback('local', () => now)
+  // After one allowed request reset_after is window/limit (600 ms), which the old heuristic
+  // mistook for the window and refilled 100x too fast.
+  fallback.learn(fromWire(wire(true, { limit: 100, reset_after_ms: 600, window_ms: 60000 }) as never))
+  const results = Array.from({ length: 101 }, () => fallback.decide('api', 'b', 1))
+  assert.deepEqual(results.map((result) => result.allowed), [...Array<boolean>(100).fill(true), false])
+  const retry = results.at(-1)?.retryAfterMs ?? 0
+  assert.ok(retry >= 550 && retry <= 650, `100 per 60 s is one token per 600 ms, got ${retry}`)
+  assert.equal(fromWire(wire() as never).windowMs, undefined)
+})
+
+test('lease pool and fallback buckets are bounded and still serve new buckets', () => {
+  let now = 0
+  const pool = new LeasePool(() => now)
+  const decision = fromWire(wire() as never)
+  for (let index = 0; index < MAX_BUCKETS + 50; index++) pool.store(`u${index}`, 5, 1, 60_000, decision)
+  assert.ok((pool as unknown as { leases: Map<string, unknown> }).leases.size <= MAX_BUCKETS)
+  assert.equal(pool.store('fresh', 5, 1, 1000, decision).allowed, true)
+  assert.notEqual(pool.trySpend('fresh', 1, 'api'), null)
+
+  const fallback = new LocalFallback('local', () => now)
+  fallback.learn(fromWire(wire(true, { limit: 5, window_ms: 60000 }) as never))
+  for (let index = 0; index < MAX_BUCKETS + 50; index++) fallback.decide('api', `api\u0000k${index}`, 1)
+  assert.ok((fallback as unknown as { buckets: Map<string, unknown> }).buckets.size <= MAX_BUCKETS)
+  assert.equal(fallback.decide('api', 'api\u0000fresh', 1).allowed, true)
+})
+
+function htmlFetch(status: number): typeof fetch {
+  return async () => new Response('<html>Bad Gateway</html>', { status, headers: { 'content-type': 'text/html' } })
+}
+
+test('a non-JSON error body becomes an AdaptiRateError', async () => {
+  for (const status of [400, 404, 429]) {
+    await assert.rejects(limiterFor(new FakeServer(), { fetch: htmlFetch(status) }).check('api', { user: 'u' }), (error: unknown) => {
+      assert.ok(error instanceof AdaptiRateError)
+      assert.deepEqual([error.status, error.detail], [status, 'unreadable response body'])
+      return true
+    })
+  }
+})
+
+test('a non-JSON 2xx or 5xx body goes through the fail mode', async () => {
+  for (const status of [200, 502]) {
+    for (const leaseSize of [0, 10]) {
+      const limiter = limiterFor(new FakeServer(), { fetch: htmlFetch(status), failMode: 'closed', cooldownMs: 60_000, leaseSize })
+      const decision = await limiter.check('api', { user: 'u' })
+      assert.deepEqual([decision.allowed, decision.source], [false, 'fallback'])
+    }
+  }
 })

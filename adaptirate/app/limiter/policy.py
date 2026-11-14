@@ -28,6 +28,18 @@ class RuleAction(StrEnum):
 RULE_ATTRIBUTES = ("user", "ip", "api_key", "role", "key")
 
 
+def canonical_ip(value: str) -> str:
+    """One spelling per address, so a rule or bucket cannot be dodged by writing the
+    same address differently (IPv4-mapped IPv6, uncompressed IPv6, upper case)."""
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return value
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return str(address)
+
+
 class ResolutionError(ValueError):
     """The request lacks what the policy needs to pick a bucket."""
 
@@ -54,7 +66,7 @@ class Rule:
                 address = ipaddress.ip_address(value)
             except ValueError:
                 return False
-            return any(address in network for network in self.networks)
+            return any(address.version == network.version and address in network for network in self.networks)
         return False
 
 
@@ -95,6 +107,8 @@ def compile_rule(raw: dict[str, Any]) -> Rule:
         text = str(item)
         if attribute == "ip" and "/" in text:
             networks.append(ipaddress.ip_network(text, strict=False))
+        elif attribute == "ip":
+            values.add(canonical_ip(text))
         else:
             values.add(text)
     window = raw.get("window_seconds")
@@ -152,6 +166,8 @@ def resolve(
     lookup = dict(attrs)
     if key is not None:
         lookup["key"] = key
+    if "ip" in lookup:
+        lookup["ip"] = canonical_ip(lookup["ip"])
 
     if policy.scope is Scope.GLOBAL:
         subject = "*"

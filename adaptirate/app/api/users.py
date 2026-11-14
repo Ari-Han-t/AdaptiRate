@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from fastapi import APIRouter, HTTPException, Request, status
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,11 +77,7 @@ async def update_user(
         changed.append("password")
     if changed:
         # Any of these changes ends existing sessions; the access token lapses within minutes.
-        await session.execute(
-            update(RefreshToken)
-            .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
-            .values(revoked_at=datetime.now(UTC))
-        )
+        await session.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
         audit.record(
             session,
             principal,

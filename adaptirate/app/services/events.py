@@ -21,6 +21,9 @@ from ..limiter import keys
 logger = logging.getLogger(__name__)
 
 FLUSH_INTERVAL_SECONDS = 0.25
+# Postgres text columns cannot hold this character; one such subject would otherwise
+# make every batch insert containing it fail.
+NUL = chr(0)
 
 
 class EventBuffer:
@@ -73,7 +76,7 @@ class EventBuffer:
                 "ts": str(int(now * 1000)),
                 "pid": policy_id,
                 "pn": policy_name,
-                "sub": subject[:300],
+                "sub": subject.replace(NUL, "")[:300],
                 "ok": "1" if allowed else "0",
                 "rs": reason,
                 "lim": str(limit),

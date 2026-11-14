@@ -14,9 +14,11 @@ import httpx
 
 from ._core import (
     API_PREFIX,
+    AdaptiRateError,
     Breaker,
     Decision,
     FailMode,
+    KeyedLocks,
     LeasePool,
     LocalFallback,
     Options,
@@ -70,6 +72,10 @@ class AdaptiveLimiter:
             transport=transport,
         )
         self._leases = LeasePool()
+        # One lease request per bucket at a time, so concurrent misses do not each fetch a
+        # lease and overwrite one another's tokens.
+        self._lease_locks: KeyedLocks[threading.Lock] = KeyedLocks(threading.Lock)
+        self._lease_locks_guard = threading.Lock()
         self._fallback = LocalFallback(self.options.fail_mode)
         self._breaker = Breaker(self.options.cooldown)
         self._reporter = Reporter(self.options.instance_id)
@@ -96,10 +102,22 @@ class AdaptiveLimiter:
             )
             return None
         self._breaker.success()
-        body = response.json()
+        # A gateway can answer with an HTML page; never let that escape as a JSON error.
+        try:
+            body: Any = response.json()
+        except ValueError:
+            body = None
         if response.status_code >= 400:
+            if body is None:
+                raise AdaptiRateError(response.status_code, "unreadable response body")
             raise error_detail(response.status_code, body)
-        return body  # type: ignore[no-any-return]
+        if not isinstance(body, dict):
+            self._breaker.failure()
+            logger.warning(
+                "AdaptiRate returned an unreadable body; using fail_mode=%s", self.options.fail_mode
+            )
+            return None
+        return body
 
     def check(
         self,
@@ -120,12 +138,19 @@ class AdaptiveLimiter:
             local = self._leases.try_spend(bucket, cost, policy)
             if local is not None:
                 return local
-            body = self._post("/lease", {**payload, "tokens": max(self.options.lease_size, cost)})
-            if body is None:
-                return self._fallback.decide(policy, bucket, cost)
-            decision = decision_from(body)
-            self._fallback.learn(decision)
-            return self._leases.store(bucket, int(body["granted"]), cost, int(body["ttl_ms"]), decision)
+            with self._lease_locks_guard:
+                lock = self._lease_locks.get(bucket)
+            with lock:
+                # Another thread may have refilled the lease while this one waited.
+                local = self._leases.try_spend(bucket, cost, policy)
+                if local is not None:
+                    return local
+                body = self._post("/lease", {**payload, "tokens": max(self.options.lease_size, cost)})
+                if body is None:
+                    return self._fallback.decide(policy, bucket, cost)
+                decision = decision_from(body)
+                self._fallback.learn(decision)
+                return self._leases.store(bucket, int(body["granted"]), cost, int(body["ttl_ms"]), decision)
 
         body = self._post("/evaluate", {**payload, "cost": cost})
         if body is None:

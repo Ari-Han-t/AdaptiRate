@@ -7,8 +7,10 @@ import socket
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from itertools import islice
+from typing import Any, Generic, Literal, Protocol, TypeVar
 
 API_PREFIX = "/api/v1"
 DEFAULT_URL = "http://localhost:8080"
@@ -17,6 +19,58 @@ DEFAULT_URL = "http://localhost:8080"
 LATENCY_BOUNDS_MS: tuple[float, ...] = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
 
 FailMode = Literal["open", "closed", "local"]
+
+# Per-bucket maps (leases, fallback buckets, lease locks) are capped so a per-IP policy on a
+# public API cannot grow them forever.
+MAX_BUCKETS = 10_000
+
+K = TypeVar("K")
+V = TypeVar("V")
+
+
+def evict_to_bound(entries: dict[K, V], is_idle: Callable[[K, V], bool]) -> None:
+    """Keep `entries` at or under MAX_BUCKETS: drop idle entries first, then the oldest half
+    (dicts keep insertion order)."""
+    if len(entries) <= MAX_BUCKETS:
+        return
+    for key in [k for k, v in entries.items() if is_idle(k, v)]:
+        del entries[key]
+    if len(entries) > MAX_BUCKETS:
+        for key in list(islice(entries, len(entries) // 2)):
+            del entries[key]
+
+
+class _Lock(Protocol):
+    def locked(self) -> bool: ...
+
+
+L = TypeVar("L", bound=_Lock)
+
+
+class KeyedLocks(Generic[L]):
+    """One lock per bucket, created on demand and bounded. Not itself thread-safe for the
+    async client (single event loop); the sync client guards it with its own mutex.
+
+    Only unlocked entries are dropped. A thread that fetched a dropped lock but has not yet
+    acquired it can race with a new one for the same bucket, which costs at most one extra
+    lease request.
+    """
+
+    def __init__(self, factory: Callable[[], L]) -> None:
+        self._factory = factory
+        self._locks: dict[tuple[str, ...], L] = {}
+
+    def __len__(self) -> int:
+        return len(self._locks)
+
+    def get(self, bucket: tuple[str, ...]) -> L:
+        lock = self._locks.get(bucket)
+        if lock is None:
+            lock = self._locks[bucket] = self._factory()
+            if len(self._locks) > MAX_BUCKETS:
+                for key in [k for k, v in self._locks.items() if not v.locked() and v is not lock]:
+                    del self._locks[key]
+        return lock
 
 
 class AdaptiRateError(Exception):
@@ -39,6 +93,8 @@ class Decision:
     policy: str
     # "server", "lease" (decided locally from leased tokens) or "fallback" (server unreachable).
     source: str = "server"
+    # Policy window reported by the server; 0 when talking to an older server.
+    window_ms: int = 0
 
     @property
     def retry_after_seconds(self) -> float:
@@ -129,6 +185,7 @@ def decision_from(body: dict[str, Any], source: str = "server") -> Decision:
         reason=str(body["reason"]),
         policy=str(body["policy"]),
         source=source,
+        window_ms=max(0, int(body.get("window_ms") or 0)),
     )
 
 
@@ -194,44 +251,58 @@ class LeasePool:
         """Record a lease response and decide the request that triggered it."""
         now = self._clock()
         with self._lock:
-            lease = self._leases.setdefault(bucket, _Lease())
-            lease.limit = decision.limit
-            lease.last = decision
-            if granted >= cost:
-                lease.tokens = granted - cost
-                lease.expires_at = now + ttl_ms / 1000
-                lease.blocked_until = 0.0
-                return Decision(
-                    True,
-                    decision.limit,
-                    lease.tokens,
-                    0,
-                    decision.reset_after_ms,
-                    "ok",
-                    decision.policy,
-                    "server",
-                )
-            # Not enough for this request. Keep what was granted for cheaper requests, and
-            # stop asking the server until it could plausibly say yes.
-            lease.tokens = granted
-            lease.expires_at = now + ttl_ms / 1000
-            wait = (
-                decision.retry_after_ms / 1000
-                if decision.retry_after_ms > 0
-                else self.MAX_LOCAL_BLOCK_SECONDS
+            result = self._apply(bucket, granted, cost, ttl_ms, decision, now)
+            # Dropping a lease only costs an extra server round trip. Evicting after the
+            # update keeps the lease just stored (not yet expired) out of the idle set.
+            evict_to_bound(
+                self._leases,
+                lambda _, entry: now >= entry.expires_at and now >= entry.blocked_until,
             )
-            lease.blocked_until = now + min(wait, self.MAX_LOCAL_BLOCK_SECONDS)
-            reason = decision.reason if decision.reason != "ok" else "limit"
+            return result
+
+    def _apply(
+        self,
+        bucket: tuple[str, ...],
+        granted: int,
+        cost: int,
+        ttl_ms: int,
+        decision: Decision,
+        now: float,
+    ) -> Decision:
+        lease = self._leases.setdefault(bucket, _Lease())
+        lease.limit = decision.limit
+        lease.last = decision
+        if granted >= cost:
+            lease.tokens = granted - cost
+            lease.expires_at = now + ttl_ms / 1000
+            lease.blocked_until = 0.0
             return Decision(
-                False,
+                True,
                 decision.limit,
-                granted,
-                max(1, decision.retry_after_ms),
+                lease.tokens,
+                0,
                 decision.reset_after_ms,
-                reason,
+                "ok",
                 decision.policy,
                 "server",
             )
+        # Not enough for this request. Keep what was granted for cheaper requests, and
+        # stop asking the server until it could plausibly say yes.
+        lease.tokens = granted
+        lease.expires_at = now + ttl_ms / 1000
+        wait = decision.retry_after_ms / 1000 if decision.retry_after_ms > 0 else self.MAX_LOCAL_BLOCK_SECONDS
+        lease.blocked_until = now + min(wait, self.MAX_LOCAL_BLOCK_SECONDS)
+        reason = decision.reason if decision.reason != "ok" else "limit"
+        return Decision(
+            False,
+            decision.limit,
+            granted,
+            max(1, decision.retry_after_ms),
+            decision.reset_after_ms,
+            reason,
+            decision.policy,
+            "server",
+        )
 
 
 # ---- fallback when the server is unreachable ------------------------------
@@ -257,8 +328,13 @@ class LocalFallback:
             return
         window = decision.reset_after_ms / 1000 if decision.reset_after_ms > 0 else 0.0
         with self._lock:
+            if decision.window_ms > 0:
+                # The server states the window, so no guessing.
+                self._known[decision.policy] = (decision.limit, decision.window_ms / 1000)
+                return
             previous = self._known.get(decision.policy)
-            # reset_after shrinks as a window elapses; the largest seen approximates the window.
+            # Older servers: reset_after shrinks as a window elapses; the largest seen
+            # approximates the window.
             best_window = max(window, previous[1] if previous else 0.0) or 1.0
             self._known[decision.policy] = (decision.limit, best_window)
 
@@ -278,10 +354,25 @@ class LocalFallback:
             tokens = min(float(limit), tokens + (now - stamp) * rate)
             if tokens >= cost:
                 self._buckets[bucket] = (tokens - cost, now)
+                self._evict(now)
                 return Decision(True, limit, int(tokens - cost), 0, 0, "fail_local", policy, "fallback")
             self._buckets[bucket] = (tokens, now)
+            self._evict(now)
             wait_ms = int((cost - tokens) / rate * 1000) + 1
             return Decision(False, limit, 0, wait_ms, wait_ms, "fail_local", policy, "fallback")
+
+    def _evict(self, now: float) -> None:
+        """Caller holds the lock. A dropped bucket restarts full, which errs toward
+        availability: an outage never denies more than it would have."""
+
+        def refilled(bucket: tuple[str, ...], state: tuple[float, float]) -> bool:
+            known = self._known.get(bucket[0])
+            if known is None:
+                return True
+            limit, window = known
+            return state[0] + (now - state[1]) * limit / window >= limit
+
+        evict_to_bound(self._buckets, refilled)
 
 
 class Breaker:

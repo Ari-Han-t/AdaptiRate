@@ -14,7 +14,7 @@ else
   end
 end
 
-if ARGV[9] == '1' then
+if ARGV[9] == '1' and (allowed == 1 or ARGV[11] ~= '0') then
   local field = 'b'
   if allowed == 1 then field = 'a' end
   local policy_key = ARGV[5] .. now_s

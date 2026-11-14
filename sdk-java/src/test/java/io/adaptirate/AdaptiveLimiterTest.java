@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import io.adaptirate.Internals.KeyedLocks;
 import io.adaptirate.Internals.LeasePool;
 import io.adaptirate.Internals.LocalFallback;
 import io.adaptirate.Internals.Reporter;
@@ -35,6 +36,8 @@ class AdaptiveLimiterTest {
     private final List<Call> calls = new CopyOnWriteArrayList<>();
     private final Map<String, Function<Map<String, Object>, Object>> responses = new LinkedHashMap<>();
     private volatile int status = 200;
+    /** When set, sent verbatim instead of JSON, like an HTML error page from a gateway. */
+    private volatile String rawBody;
 
     static Map<String, Object> wire(boolean allowed) {
         Map<String, Object> body = new LinkedHashMap<>();
@@ -62,7 +65,7 @@ class AdaptiveLimiterTest {
             String path = exchange.getRequestURI().getPath();
             calls.add(new Call(path, body, exchange.getRequestHeaders().getFirst("X-API-Key")));
             Object answer = responses.getOrDefault(path, ignored -> wire(true)).apply(body);
-            byte[] bytes = JSON.writeValueAsBytes(answer);
+            byte[] bytes = rawBody != null ? rawBody.getBytes(java.nio.charset.StandardCharsets.UTF_8) : JSON.writeValueAsBytes(answer);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(status, bytes.length);
             exchange.getResponseBody().write(bytes);
@@ -330,6 +333,89 @@ class AdaptiveLimiterTest {
         try (AdaptiveLimiter sdk = limiter().build()) {
             assertThatThrownBy(() -> sdk.await("api", Subject.user("u"), Duration.ofMillis(100)))
                     .isInstanceOf(RateLimitExceededException.class);
+        }
+    }
+
+    @Test
+    void localFallbackUsesTheWindowTheServerReports() {
+        double[] now = {0};
+        LocalFallback fallback = new LocalFallback(AdaptiveLimiter.FailMode.LOCAL, () -> now[0]);
+        // After one allowed request reset_after is window/limit (600 ms), which the old heuristic
+        // mistook for the window and refilled 100x too fast.
+        Map<String, Object> learned = wire(true, "limit", 100);
+        learned.put("reset_after_ms", 600);
+        learned.put("window_ms", 60000);
+        fallback.learn(Decision.fromWire(learned, "server"));
+        int allowed = 0;
+        Decision last = null;
+        for (int i = 0; i < 101; i++) {
+            last = fallback.decide("api", "b", 1);
+            allowed += last.allowed() ? 1 : 0;
+        }
+        assertThat(allowed).isEqualTo(100);
+        assertThat(last.retryAfterMs()).as("100 per 60 s is one token per 600 ms").isBetween(550L, 650L);
+        assertThat(Decision.fromWire(wire(true), "server").windowMs()).isZero();
+    }
+
+    @Test
+    void leasePoolFallbackAndLocksAreBoundedAndStillServeNewBuckets() {
+        double[] now = {0};
+        LeasePool pool = new LeasePool(() -> now[0]);
+        Decision decision = Decision.fromWire(wire(true), "server");
+        for (int i = 0; i < Internals.MAX_BUCKETS + 50; i++) {
+            pool.store("api\u0000u" + i, 5, 1, 60_000, decision);
+        }
+        assertThat(pool.size()).isLessThanOrEqualTo(Internals.MAX_BUCKETS);
+        assertThat(pool.store("api\u0000fresh", 5, 1, 1000, decision).allowed()).isTrue();
+        assertThat(pool.trySpend("api\u0000fresh", 1, "api")).isNotNull();
+
+        LocalFallback fallback = new LocalFallback(AdaptiveLimiter.FailMode.LOCAL, () -> now[0]);
+        Map<String, Object> learned = wire(true, "limit", 5);
+        learned.put("window_ms", 60000);
+        fallback.learn(Decision.fromWire(learned, "server"));
+        for (int i = 0; i < Internals.MAX_BUCKETS + 50; i++) {
+            fallback.decide("api", "api\u0000u" + i, 1);
+        }
+        assertThat(fallback.size()).isLessThanOrEqualTo(Internals.MAX_BUCKETS);
+        assertThat(fallback.decide("api", "api\u0000fresh", 1).allowed()).isTrue();
+
+        KeyedLocks locks = new KeyedLocks();
+        var held = locks.get("held");
+        held.lock();
+        for (int i = 0; i < Internals.MAX_BUCKETS + 50; i++) {
+            locks.get("k" + i);
+        }
+        assertThat(locks.size()).isLessThanOrEqualTo(Internals.MAX_BUCKETS);
+        assertThat(locks.get("held")).isSameAs(held);
+        held.unlock();
+    }
+
+    @Test
+    void nonJsonClientErrorsBecomeAdaptiRateException() {
+        status = 400;
+        rawBody = "<html>Bad Request</html>";
+        try (AdaptiveLimiter sdk = limiter().build()) {
+            assertThatThrownBy(() -> sdk.check("api", Subject.user("u")))
+                    .isInstanceOfSatisfying(AdaptiRateException.class, error -> {
+                        assertThat(error.status()).isEqualTo(400);
+                        assertThat(error.detail()).isEqualTo("unreadable response body");
+                    });
+        }
+    }
+
+    @Test
+    void nonJsonSuccessOrServerErrorBodiesGoThroughTheFailMode() {
+        rawBody = "<html>Bad Gateway</html>";
+        for (int code : new int[] {200, 502}) {
+            calls.clear();
+            status = code;
+            try (AdaptiveLimiter sdk = limiter().failMode(AdaptiveLimiter.FailMode.CLOSED).cooldown(Duration.ofMinutes(1)).build()) {
+                Decision decision = sdk.check("api", Subject.user("u"));
+                assertThat(sdk.check("api", Subject.user("u")).allowed()).isFalse();
+                assertThat(decision.allowed()).isFalse();
+                assertThat(decision.source()).isEqualTo("fallback");
+            }
+            assertThat(calls).as("an unreadable body trips the breaker").hasSize(1);
         }
     }
 }

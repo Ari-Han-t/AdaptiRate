@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any
 
 from .client import AdaptiveLimiter
@@ -23,6 +23,49 @@ def client_address(environ: Environ) -> Mapping[str, Any]:
     """Default identity: REMOTE_ADDR. Behind a proxy, have your server set REMOTE_ADDR
     from the headers it trusts (for example werkzeug's ProxyFix), or pass `identify`."""
     return {"ip": environ.get("REMOTE_ADDR") or "unknown"}
+
+
+class _TrackedBody:
+    """The app's response iterable, passed through lazily.
+
+    PEP 3333 requires close() to reach the app's iterable (Django fires request_finished from
+    it), and buffering the body would break streaming. The request is recorded exactly once:
+    when the body is exhausted or fails, or in close() if the server stops early.
+    """
+
+    def __init__(self, body: Iterable[bytes], finish: Callable[[bool], None]) -> None:
+        self._body = body
+        self._iterator: Iterator[bytes] | None = None
+        self._finish = finish
+        self._finished = False
+
+    def __iter__(self) -> _TrackedBody:
+        return self
+
+    def __next__(self) -> bytes:
+        if self._iterator is None:
+            self._iterator = iter(self._body)
+        try:
+            return next(self._iterator)
+        except StopIteration:
+            self._record(error=False)
+            raise
+        except BaseException:
+            self._record(error=True)
+            raise
+
+    def close(self) -> None:
+        try:
+            close = getattr(self._body, "close", None)
+            if close is not None:
+                close()
+        finally:
+            self._record(error=False)
+
+    def _record(self, *, error: bool) -> None:
+        if not self._finished:
+            self._finished = True
+            self._finish(error)
 
 
 class AdaptiRateWSGIMiddleware:
@@ -71,8 +114,15 @@ class AdaptiRateWSGIMiddleware:
             status_code = int(status.split(" ", 1)[0])
             return start_response(status, [*headers, *extra], exc_info)
 
+        def finish(error: bool) -> None:
+            self.limiter.record(
+                self.policy, (time.perf_counter() - started) * 1000, status=status_code, error=error
+            )
+
         try:
-            # Consume the body here so the measured time covers streaming it.
-            return list(self.app(environ, start_with_headers))
-        finally:
-            self.limiter.record(self.policy, (time.perf_counter() - started) * 1000, status=status_code)
+            app_body = self.app(environ, start_with_headers)
+        except BaseException:
+            finish(True)
+            raise
+        # Latency covers streaming the body, recorded when the server finishes with it.
+        return _TrackedBody(app_body, finish)

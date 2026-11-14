@@ -15,9 +15,11 @@ import httpx
 
 from ._core import (
     API_PREFIX,
+    AdaptiRateError,
     Breaker,
     Decision,
     FailMode,
+    KeyedLocks,
     LeasePool,
     LocalFallback,
     Options,
@@ -77,7 +79,7 @@ class AsyncAdaptiveLimiter:
         self._reporter = Reporter(self.options.instance_id)
         self._flusher: asyncio.Task[None] | None = None
         # One lease request per bucket at a time, so a burst does not stampede the server.
-        self._lease_locks: dict[tuple[str, ...], asyncio.Lock] = {}
+        self._lease_locks: KeyedLocks[asyncio.Lock] = KeyedLocks(asyncio.Lock)
         self._closed = False
 
     # ---- decisions --------------------------------------------------------
@@ -98,10 +100,22 @@ class AsyncAdaptiveLimiter:
             )
             return None
         self._breaker.success()
-        body = response.json()
+        # A gateway can answer with an HTML page; never let that escape as a JSON error.
+        try:
+            body: Any = response.json()
+        except ValueError:
+            body = None
         if response.status_code >= 400:
+            if body is None:
+                raise AdaptiRateError(response.status_code, "unreadable response body")
             raise error_detail(response.status_code, body)
-        return body  # type: ignore[no-any-return]
+        if not isinstance(body, dict):
+            self._breaker.failure()
+            logger.warning(
+                "AdaptiRate returned an unreadable body; using fail_mode=%s", self.options.fail_mode
+            )
+            return None
+        return body
 
     async def check(
         self,
@@ -122,7 +136,7 @@ class AsyncAdaptiveLimiter:
             local = self._leases.try_spend(bucket, cost, policy)
             if local is not None:
                 return local
-            lock = self._lease_locks.setdefault(bucket, asyncio.Lock())
+            lock = self._lease_locks.get(bucket)
             async with lock:
                 # Another task may have refilled the lease while this one waited.
                 local = self._leases.try_spend(bucket, cost, policy)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import timedelta
 
 import httpx
 import jwt
@@ -92,8 +93,10 @@ async def test_login_is_rate_limited_per_account(client: httpx.AsyncClient):
 
 
 async def test_refresh_rotates_and_reuse_revokes_the_session(
-    client: httpx.AsyncClient, admin: dict[str, str]
+    client: httpx.AsyncClient, admin: dict[str, str], monkeypatch
 ):
+    # Reuse within a few seconds is treated as a second tab; test the theft path directly.
+    monkeypatch.setattr("app.api.auth.REFRESH_REUSE_GRACE", timedelta(0))
     created = await client.post(
         f"{API}/users",
         headers=admin,

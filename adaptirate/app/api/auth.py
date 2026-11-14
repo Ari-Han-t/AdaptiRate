@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from sqlalchemy import select, update
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings
@@ -25,6 +25,7 @@ COOKIE_PATH = "/api/v1/auth"
 LOGIN_ATTEMPTS_PER_ACCOUNT = 8
 LOGIN_ATTEMPTS_PER_ADDRESS = 40
 LOGIN_WINDOW_MS = 5 * 60 * 1000
+REFRESH_REUSE_GRACE = timedelta(seconds=10)
 
 
 def _set_cookie(response: Response, token: str, settings: Settings) -> None:
@@ -118,13 +119,20 @@ async def refresh(
     if row is None or row.expires_at <= now:
         response.delete_cookie(REFRESH_COOKIE, path=COOKIE_PATH)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired")
+    # `revoked_at` is set only by rotation (below). Logout and admin revocation delete the
+    # row outright, so they can never fall into the grace window.
+    if row.revoked_at is not None and now - row.revoked_at <= REFRESH_REUSE_GRACE:
+        # The same cookie arriving twice within moments is two browser tabs (or a retry)
+        # refreshing at once, not theft. Issue this caller a session too.
+        user = await session.get(User, row.user_id)
+        if user is None or not user.is_active:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account disabled")
+        tokens = await _issue(session, user, response, settings)
+        await session.commit()
+        return tokens
     if row.revoked_at is not None:
-        # A rotated token was presented again: assume it leaked and end every session.
-        await session.execute(
-            update(RefreshToken)
-            .where(RefreshToken.user_id == row.user_id, RefreshToken.revoked_at.is_(None))
-            .values(revoked_at=now)
-        )
+        # A rotated token was presented again later: assume it leaked and end every session.
+        await session.execute(delete(RefreshToken).where(RefreshToken.user_id == row.user_id))
         audit.record(session, None, "auth.refresh_reuse", resource_type="user", resource_id=row.user_id)
         await session.commit()
         response.delete_cookie(REFRESH_COOKIE, path=COOKIE_PATH)
@@ -143,11 +151,7 @@ async def refresh(
 async def logout(request: Request, response: Response, session: SessionDep) -> Response:
     token = request.cookies.get(REFRESH_COOKIE)
     if token:
-        await session.execute(
-            update(RefreshToken)
-            .where(RefreshToken.token_hash == sha256_hex(token), RefreshToken.revoked_at.is_(None))
-            .values(revoked_at=datetime.now(UTC))
-        )
+        await session.execute(delete(RefreshToken).where(RefreshToken.token_hash == sha256_hex(token)))
         await session.commit()
     response.delete_cookie(REFRESH_COOKIE, path=COOKIE_PATH)
     response.status_code = status.HTTP_204_NO_CONTENT

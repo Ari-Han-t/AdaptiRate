@@ -4,7 +4,7 @@
 -- ARGV[1] base limit      ARGV[2] window (ms)           ARGV[3] burst
 -- ARGV[4] cost            ARGV[5] policy counter prefix ARGV[6] global counter prefix
 -- ARGV[7] top-N prefix    ARGV[8] top-N member          ARGV[9] "1" to record counters
--- ARGV[10] policy name
+-- ARGV[10] policy name     ARGV[11] "0" to skip recording a refusal (lease probes)
 --
 -- Time comes from Redis so every caller shares one clock.
 local base_limit = tonumber(ARGV[1])

@@ -3,6 +3,7 @@ package io.adaptirate;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.adaptirate.Internals.Breaker;
+import io.adaptirate.Internals.KeyedLocks;
 import io.adaptirate.Internals.LeasePool;
 import io.adaptirate.Internals.LocalFallback;
 import io.adaptirate.Internals.Reporter;
@@ -19,12 +20,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,7 +63,7 @@ public final class AdaptiveLimiter implements AutoCloseable {
     private final Breaker breaker;
     private final Reporter reporter;
     /** One lease request per bucket at a time, so a burst does not stampede the server. */
-    private final ConcurrentHashMap<String, Object> leaseLocks = new ConcurrentHashMap<>();
+    private final KeyedLocks leaseLocks = new KeyedLocks();
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -152,15 +153,24 @@ public final class AdaptiveLimiter implements AutoCloseable {
             return null;
         }
         breaker.success();
+        // A gateway can answer with an HTML page; never let that escape as a parsing failure.
         Map<String, Object> body;
         try {
             body = json.readValue(response.body(), JSON_OBJECT);
         } catch (IOException malformed) {
-            throw new AdaptiRateException(response.statusCode(), "unreadable response body");
+            body = null;
         }
         if (response.statusCode() >= 400) {
+            if (body == null) {
+                throw new AdaptiRateException(response.statusCode(), "unreadable response body");
+            }
             Object detail = body.get("detail");
             throw new AdaptiRateException(response.statusCode(), detail instanceof String text ? text : String.valueOf(detail));
+        }
+        if (body == null) {
+            breaker.failure();
+            log.warn("AdaptiRate sent an unreadable body; using the configured fail mode");
+            return null;
         }
         return body;
     }
@@ -176,7 +186,9 @@ public final class AdaptiveLimiter implements AutoCloseable {
             if (local != null) {
                 return local;
             }
-            synchronized (leaseLocks.computeIfAbsent(bucket, ignored -> new Object())) {
+            ReentrantLock lock = leaseLocks.get(bucket);
+            lock.lock();
+            try {
                 // Another thread may have refilled the lease while this one waited.
                 local = leases.trySpend(bucket, cost, policy);
                 if (local != null) {
@@ -190,6 +202,8 @@ public final class AdaptiveLimiter implements AutoCloseable {
                 Decision decision = Decision.fromWire(body, "server");
                 fallback.learn(decision);
                 return leases.store(bucket, Decision.number(body, "granted"), cost, Decision.number(body, "ttl_ms"), decision);
+            } finally {
+                lock.unlock();
             }
         }
 

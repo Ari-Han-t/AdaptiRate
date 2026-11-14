@@ -35,9 +35,20 @@ class ProviderState:
     def remaining(self, dimension: str) -> float | None:
         return self.remaining_tokens if dimension == "tokens" else self.remaining_requests
 
+    def limit(self, dimension: str) -> float | None:
+        return self.limit_tokens if dimension == "tokens" else self.limit_requests
+
     def reset_in(self, dimension: str, now: float) -> float | None:
+        """Seconds until this quota resets, or None when that is unknown.
+
+        Once the reset time has passed, the remaining count we hold is stale: the
+        provider has refilled. Reporting 0 here would keep pacing against the old
+        (possibly zero) remaining figure and hold the limit near zero indefinitely.
+        """
         reset_at = self.reset_tokens_at if dimension == "tokens" else self.reset_requests_at
-        return None if reset_at is None else max(0.0, reset_at - now)
+        if reset_at is None or reset_at <= now:
+            return None
+        return reset_at - now
 
     def as_dict(self, now: float) -> dict[str, Any]:
         return {

@@ -111,10 +111,16 @@ export class AdaptiveLimiter {
       return null
     }
     this.breaker.success()
+    // A gateway can answer with an HTML page; an unreadable body must not crash the caller.
     const body: unknown = await response.json().catch(() => null)
     if (response.status >= 400) {
-      const detail = body && typeof body === 'object' && 'detail' in body ? (body as { detail: unknown }).detail : body
+      if (body === null) throw new AdaptiRateError(response.status, 'unreadable response body')
+      const detail = typeof body === 'object' && 'detail' in body ? (body as { detail: unknown }).detail : body
       throw new AdaptiRateError(response.status, typeof detail === 'string' ? detail : JSON.stringify(detail))
+    }
+    if (body === null || typeof body !== 'object') {
+      this.breaker.failure()
+      return null
     }
     return body as T
   }

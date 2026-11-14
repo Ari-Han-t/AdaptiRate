@@ -80,8 +80,9 @@ def _count_static(pipe: Redis, policy: CompiledPolicy, subject: str, allowed: bo
     pipe.hincrby(keys.TOTALS, f"{field}:{policy.name}", cost)
 
 
-def _body(policy: CompiledPolicy, decision: Decision) -> dict[str, object]:
+def _body(policy: CompiledPolicy, decision: Decision, window_ms: int | None = None) -> dict[str, object]:
     return {
+        "window_ms": policy.window_ms if window_ms is None else window_ms,
         "allowed": decision.allowed,
         "limit": decision.limit,
         "remaining": decision.remaining,
@@ -141,7 +142,8 @@ async def evaluate(
         decision = await engine.check(resolution.check)
 
     _log(events, cache, principal, policy, resolution.subject, decision, body.cost)
-    return _json(_body(policy, decision))
+    window_ms = resolution.check.window_ms if resolution.check is not None else None
+    return _json(_body(policy, decision, window_ms))
 
 
 @router.post(
@@ -191,7 +193,7 @@ async def evaluate_batch(
         else:
             decision = next(decisions)
         _log(events, cache, principal, policy, resolved.subject, decision, cost)
-        results.append(_body(policy, decision))
+        results.append(_body(policy, decision, resolved.check.window_ms if resolved.check else None))
     return _json({"results": results})
 
 
@@ -225,7 +227,8 @@ async def lease(
         ttl_ms = int(min(MAX_LEASE_TTL_MS, max(MIN_LEASE_TTL_MS, resolution.check.window_ms / 2)))
 
     _log(events, cache, principal, policy, resolution.subject, decision, granted or body.tokens)
-    return _json({**_body(policy, decision), "granted": granted, "ttl_ms": ttl_ms})
+    window_ms = resolution.check.window_ms if resolution.check is not None else None
+    return _json({**_body(policy, decision, window_ms), "granted": granted, "ttl_ms": ttl_ms})
 
 
 @router.post(
@@ -267,7 +270,9 @@ async def provider_report(
         body.provider,
         body.status,
         body.headers,
-        policies=list(cache.policies.values()),
+        # Only policies this key may use: otherwise a key scoped to one tenant's policy
+        # could pause every other policy bound to the same provider.
+        policies=[policy for policy in cache.policies.values() if principal.can_use_policy(policy.id)],
         custom=cache.custom_providers.get(body.provider),
     )
     return {"provider": body.provider, "throttled": observation.throttled, "paused_ms": int(pause * 1000)}

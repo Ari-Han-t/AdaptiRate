@@ -2,10 +2,14 @@ package io.adaptirate;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiPredicate;
 import java.util.function.DoubleSupplier;
 
 /** Transport-independent pieces shared by the client: leases, fallback, breaker, reporting. */
@@ -16,6 +20,52 @@ final class Internals {
     static final double[] LATENCY_BOUNDS_MS = {1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000};
 
     static final DoubleSupplier MONOTONIC_SECONDS = () -> System.nanoTime() / 1e9;
+
+    /**
+     * Per-bucket maps (leases, fallback buckets, lease locks) are capped so a per-IP policy on
+     * a public API cannot grow them forever.
+     */
+    static final int MAX_BUCKETS = 10_000;
+
+    /**
+     * Keeps an insertion-ordered map at or under {@link #MAX_BUCKETS}: idle entries go first,
+     * then the oldest half.
+     */
+    static <V> void evictToBound(LinkedHashMap<String, V> entries, BiPredicate<String, V> isIdle) {
+        if (entries.size() <= MAX_BUCKETS) {
+            return;
+        }
+        entries.entrySet().removeIf(entry -> isIdle.test(entry.getKey(), entry.getValue()));
+        if (entries.size() > MAX_BUCKETS) {
+            int drop = entries.size() / 2;
+            Iterator<String> oldest = entries.keySet().iterator();
+            while (drop-- > 0 && oldest.hasNext()) {
+                oldest.next();
+                oldest.remove();
+            }
+        }
+    }
+
+    /**
+     * One lock per bucket, created on demand and bounded. Only unlocked entries are dropped; a
+     * thread that fetched a dropped lock but has not yet acquired it can race with a new one for
+     * the same bucket, which costs at most one extra lease request.
+     */
+    static final class KeyedLocks {
+        private final ConcurrentHashMap<String, ReentrantLock> locks = new ConcurrentHashMap<>();
+
+        ReentrantLock get(String bucket) {
+            ReentrantLock lock = locks.computeIfAbsent(bucket, ignored -> new ReentrantLock());
+            if (locks.size() > MAX_BUCKETS) {
+                locks.entrySet().removeIf(entry -> entry.getValue() != lock && !entry.getValue().isLocked());
+            }
+            return lock;
+        }
+
+        int size() {
+            return locks.size();
+        }
+    }
 
     /**
      * Tokens leased from the server and spent locally. Expired tokens are discarded, never
@@ -32,11 +82,15 @@ final class Internals {
             Decision last;
         }
 
-        private final Map<String, Lease> leases = new HashMap<>();
+        private final LinkedHashMap<String, Lease> leases = new LinkedHashMap<>();
         private final DoubleSupplier clock;
 
         LeasePool(DoubleSupplier clock) {
             this.clock = clock;
+        }
+
+        synchronized int size() {
+            return leases.size();
         }
 
         /** A local decision, or null when the server must be asked. */
@@ -48,11 +102,11 @@ final class Internals {
             double now = clock.getAsDouble();
             if (now < lease.expiresAt && lease.tokens >= cost) {
                 lease.tokens -= cost;
-                return new Decision(true, lease.limit, lease.tokens, 0, 0, "ok", policy, "lease");
+                return new Decision(true, lease.limit, lease.tokens, 0, 0, "ok", policy, "lease", 0);
             }
             if (now < lease.blockedUntil && lease.last != null) {
                 long waitMs = Math.max(1, Math.round((lease.blockedUntil - now) * 1000));
-                return new Decision(false, lease.last.limit(), 0, waitMs, lease.last.resetAfterMs(), lease.last.reason(), policy, "lease");
+                return new Decision(false, lease.last.limit(), 0, waitMs, lease.last.resetAfterMs(), lease.last.reason(), policy, "lease", 0);
             }
             return null;
         }
@@ -60,7 +114,14 @@ final class Internals {
         /** Record a lease response and decide the request that triggered it. */
         synchronized Decision store(String bucket, long granted, int cost, long ttlMs, Decision decision) {
             double now = clock.getAsDouble();
-            Lease lease = leases.computeIfAbsent(bucket, ignored -> new Lease());
+            Decision result = apply(leases.computeIfAbsent(bucket, ignored -> new Lease()), granted, cost, ttlMs, decision, now);
+            // Dropping a lease only costs an extra server round trip. Evicting after the update
+            // keeps the lease just stored out of the idle set.
+            evictToBound(leases, (ignored, lease) -> now >= lease.expiresAt && now >= lease.blockedUntil);
+            return result;
+        }
+
+        private static Decision apply(Lease lease, long granted, int cost, long ttlMs, Decision decision, double now) {
             lease.limit = decision.limit();
             lease.last = decision;
             lease.expiresAt = now + ttlMs / 1000.0;
@@ -91,31 +152,41 @@ final class Internals {
         private final AdaptiveLimiter.FailMode mode;
         private final DoubleSupplier clock;
         private final Map<String, Known> known = new HashMap<>();
-        private final Map<String, Bucket> buckets = new HashMap<>();
+        private final LinkedHashMap<String, Bucket> buckets = new LinkedHashMap<>();
 
         LocalFallback(AdaptiveLimiter.FailMode mode, DoubleSupplier clock) {
             this.mode = mode;
             this.clock = clock;
         }
 
+        synchronized int size() {
+            return buckets.size();
+        }
+
         synchronized void learn(Decision decision) {
             if (!"server".equals(decision.source()) || decision.limit() <= 0) {
                 return;
             }
+            if (decision.windowMs() > 0) {
+                // The server states the window, so no guessing.
+                known.put(decision.policy(), new Known(decision.limit(), decision.windowMs() / 1000.0));
+                return;
+            }
             double window = decision.resetAfterMs() > 0 ? decision.resetAfterMs() / 1000.0 : 0;
             Known previous = known.get(decision.policy());
-            // reset_after shrinks as a window elapses; the largest seen approximates the window.
+            // Older servers: reset_after shrinks as a window elapses; the largest seen approximates
+            // the window.
             double best = Math.max(window, previous == null ? 0 : previous.windowSeconds());
             known.put(decision.policy(), new Known(decision.limit(), best > 0 ? best : 1));
         }
 
         synchronized Decision decide(String policy, String bucket, int cost) {
             if (mode == AdaptiveLimiter.FailMode.CLOSED) {
-                return new Decision(false, 0, 0, 1000, 1000, "fail_closed", policy, "fallback");
+                return new Decision(false, 0, 0, 1000, 1000, "fail_closed", policy, "fallback", 0);
             }
             Known limit = known.get(policy);
             if (mode == AdaptiveLimiter.FailMode.OPEN || limit == null) {
-                return new Decision(true, 0, 0, 0, 0, "fail_open", policy, "fallback");
+                return new Decision(true, 0, 0, 0, 0, "fail_open", policy, "fallback", 0);
             }
             double rate = limit.limit() / limit.windowSeconds();
             double now = clock.getAsDouble();
@@ -123,11 +194,24 @@ final class Internals {
             double tokens = Math.min(limit.limit(), state.tokens() + (now - state.stamp()) * rate);
             if (tokens >= cost) {
                 buckets.put(bucket, new Bucket(tokens - cost, now));
-                return new Decision(true, limit.limit(), (long) (tokens - cost), 0, 0, "fail_local", policy, "fallback");
+                evict(now);
+                return new Decision(true, limit.limit(), (long) (tokens - cost), 0, 0, "fail_local", policy, "fallback", 0);
             }
             buckets.put(bucket, new Bucket(tokens, now));
+            evict(now);
             long waitMs = (long) ((cost - tokens) / rate * 1000) + 1;
-            return new Decision(false, limit.limit(), 0, waitMs, waitMs, "fail_local", policy, "fallback");
+            return new Decision(false, limit.limit(), 0, waitMs, waitMs, "fail_local", policy, "fallback", 0);
+        }
+
+        /**
+         * A dropped bucket restarts full, which errs toward availability: an outage never denies
+         * more than it would have.
+         */
+        private void evict(double now) {
+            evictToBound(buckets, (key, state) -> {
+                Known limit = known.get(key.substring(0, Math.max(0, key.indexOf('\u0000'))));
+                return limit == null || state.tokens() + (now - state.stamp()) * limit.limit() / limit.windowSeconds() >= limit.limit();
+            });
         }
     }
 

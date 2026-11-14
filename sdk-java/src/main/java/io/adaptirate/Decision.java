@@ -7,6 +7,7 @@ import java.util.Map;
  * The answer to "may this request proceed?".
  *
  * @param source "server", "lease" (decided locally from leased tokens) or "fallback" (server unreachable)
+ * @param windowMs the policy window the server reported; 0 when talking to an older server
  */
 public record Decision(
         boolean allowed,
@@ -16,7 +17,8 @@ public record Decision(
         long resetAfterMs,
         String reason,
         String policy,
-        String source) {
+        String source,
+        long windowMs) {
 
     public double retryAfterSeconds() {
         return Math.max(0, retryAfterMs / 1000.0);
@@ -43,7 +45,8 @@ public record Decision(
                 number(body, "reset_after_ms"),
                 String.valueOf(body.get("reason")),
                 String.valueOf(body.get("policy")),
-                source);
+                source,
+                number(body, "window_ms"));
     }
 
     static long number(Map<String, Object> body, String field) {
@@ -52,6 +55,6 @@ public record Decision(
     }
 
     Decision with(boolean nowAllowed, long nowRemaining, long nowRetryAfterMs, String nowReason, String nowSource) {
-        return new Decision(nowAllowed, limit, nowRemaining, nowRetryAfterMs, resetAfterMs, nowReason, policy, nowSource);
+        return new Decision(nowAllowed, limit, nowRemaining, nowRetryAfterMs, resetAfterMs, nowReason, policy, nowSource, windowMs);
     }
 }

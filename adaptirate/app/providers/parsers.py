@@ -25,6 +25,9 @@ class HeaderMap:
     limit_tokens: str | None = None
     reset_tokens: str | None = None
     reset_format: str = "seconds"  # seconds | epoch | duration | rfc3339
+    # "continuous": the quota refills steadily and the reset header says when it will be
+    # full. "window": nothing comes back until the reset time.
+    refill: str = "continuous"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +69,19 @@ BUILTIN: dict[str, HeaderMap] = {
         limit_requests="x-ratelimit-limit",
         reset_requests="x-ratelimit-reset",
         reset_format="epoch",
+        refill="window",
     ),
     # Gemini does not publish quota headers; only 429 and Retry-After are usable.
     "gemini": HeaderMap(),
 }
+
+
+def refills_continuously(provider: str, custom: dict[str, str] | None) -> bool:
+    """Whether a provider's quota refills steadily rather than all at once."""
+    if custom is not None:
+        return custom.get("refill", "continuous") == "continuous"
+    known = BUILTIN.get(provider)
+    return known is None or known.refill == "continuous"
 
 
 def parse_duration(text: str) -> float | None:

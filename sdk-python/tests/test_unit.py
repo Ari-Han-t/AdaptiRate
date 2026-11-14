@@ -9,7 +9,15 @@ import httpx
 import pytest
 
 from adaptirate import AdaptiRateError, AdaptiveLimiter, AsyncAdaptiveLimiter, RateLimitExceeded
-from adaptirate._core import LATENCY_BOUNDS_MS, LeasePool, LocalFallback, Reporter, decision_from
+from adaptirate._core import (
+    LATENCY_BOUNDS_MS,
+    MAX_BUCKETS,
+    KeyedLocks,
+    LeasePool,
+    LocalFallback,
+    Reporter,
+    decision_from,
+)
 
 
 def decision(allowed: bool = True, **overrides: Any) -> dict[str, Any]:
@@ -294,6 +302,112 @@ def test_local_fallback_refills_over_time():
     assert [fallback.decide("api", bucket, 1).allowed for _ in range(2)] == [True, False]
 
 
+def test_local_fallback_uses_the_window_the_server_reports():
+    now = [0.0]
+    fallback = LocalFallback("local", clock=lambda: now[0])
+    # After one allowed request reset_after is window/limit (600 ms), which the old heuristic
+    # mistook for the window and refilled 100x too fast.
+    fallback.learn(decision_from(decision(limit=100, reset_after_ms=600, window_ms=60000)))
+    bucket = ("api", "", "u", "", "", "")
+    results = [fallback.decide("api", bucket, 1) for _ in range(101)]
+    assert [r.allowed for r in results] == [True] * 100 + [False]
+    assert 550 <= results[-1].retry_after_ms <= 650, "100 per 60 s is one token per 600 ms"
+
+
+def test_local_fallback_without_window_ms_keeps_the_old_heuristic():
+    fallback = LocalFallback("local", clock=lambda: 0.0)
+    fallback.learn(decision_from(decision(limit=2, reset_after_ms=1000)))
+    assert decision_from(decision()).window_ms == 0
+    bucket = ("api", "", "u", "", "", "")
+    assert [fallback.decide("api", bucket, 1).allowed for _ in range(3)] == [True, True, False]
+
+
+def test_lease_pool_is_bounded_and_still_serves_new_buckets():
+    now = [0.0]
+    pool = LeasePool(clock=lambda: now[0])
+    granted = decision_from({**decision(), "granted": 5, "ttl_ms": 1000})
+    for index in range(MAX_BUCKETS + 50):
+        pool.store(("api", "", f"u{index}", "", "", ""), 5, 1, 60000, granted)
+    assert len(pool._leases) <= MAX_BUCKETS
+    fresh = ("api", "", "fresh", "", "", "")
+    assert pool.store(fresh, 5, 1, 1000, granted).allowed
+    assert pool.try_spend(fresh, 1, "api") is not None
+    # Expired leases go first.
+    now[0] = 120.0
+    for index in range(MAX_BUCKETS):
+        pool.store(("api", "", f"v{index}", "", "", ""), 5, 1, 1000, granted)
+    assert len(pool._leases) <= MAX_BUCKETS
+
+
+def test_local_fallback_buckets_are_bounded():
+    now = [0.0]
+    fallback = LocalFallback("local", clock=lambda: now[0])
+    fallback.learn(decision_from(decision(limit=5, window_ms=60000)))
+    for index in range(MAX_BUCKETS + 50):
+        fallback.decide("api", ("api", "", f"u{index}", "", "", ""), 1)
+    assert len(fallback._buckets) <= MAX_BUCKETS
+    assert fallback.decide("api", ("api", "", "fresh", "", "", ""), 1).allowed
+
+
+def test_keyed_locks_are_bounded_and_keep_held_locks():
+    import threading
+
+    locks: KeyedLocks[threading.Lock] = KeyedLocks(threading.Lock)
+    held = locks.get(("held",))
+    held.acquire()
+    for index in range(MAX_BUCKETS + 50):
+        locks.get((f"k{index}",))
+    assert len(locks) <= MAX_BUCKETS
+    assert locks.get(("held",)) is held
+    held.release()
+
+
+def test_sync_lease_size_bursts_share_one_lease_request(server: FakeServer):
+    from concurrent.futures import ThreadPoolExecutor
+
+    server.responses["/api/v1/lease"] = lambda payload: {
+        **decision(),
+        "granted": payload["tokens"],
+        "ttl_ms": 2000,
+    }
+    with sync_limiter(server, lease_size=100) as limiter, ThreadPoolExecutor(max_workers=50) as pool:
+        results = list(pool.map(lambda _: limiter.check("api", user="u1"), range(50)))
+    assert all(r.allowed for r in results)
+    assert server.paths() == ["/api/v1/lease"], "concurrent misses must not each fetch a lease"
+
+
+def html_response(status: int) -> httpx.Response:
+    return httpx.Response(status, text="<html>Bad Gateway</html>", headers={"content-type": "text/html"})
+
+
+@pytest.mark.parametrize("status", [400, 404, 429])
+def test_non_json_client_error_raises_adaptirate_error(server: FakeServer, status: int):
+    server.responses["/api/v1/evaluate"] = html_response(status)
+    with sync_limiter(server) as limiter, pytest.raises(AdaptiRateError) as caught:
+        limiter.check("api", user="u1")
+    assert caught.value.status == status and caught.value.detail == "unreadable response body"
+
+
+@pytest.mark.parametrize("status", [200, 502])
+def test_non_json_success_or_server_error_uses_fail_mode(server: FakeServer, status: int):
+    server.responses["/api/v1/evaluate"] = html_response(status)
+    with sync_limiter(server, fail_mode="closed", cooldown=60) as limiter:
+        result = limiter.check("api", user="u1")
+        limiter.check("api", user="u1")
+    assert (result.allowed, result.source) == (False, "fallback")
+    assert len(server.requests) == 1, "an unreadable body trips the breaker"
+
+
+async def test_async_non_json_bodies(server: FakeServer):
+    server.responses["/api/v1/evaluate"] = html_response(403)
+    async with async_limiter(server, fail_mode="closed") as limiter:
+        with pytest.raises(AdaptiRateError) as caught:
+            await limiter.check("api", user="u1")
+        assert caught.value.detail == "unreadable response body"
+        server.responses["/api/v1/evaluate"] = html_response(200)
+        assert (await limiter.check("api", user="u1")).source == "fallback"
+
+
 # ---- async client ---------------------------------------------------------
 
 
@@ -423,6 +537,62 @@ def test_wsgi_middleware_allows_blocks_and_reports(server: FakeServer):
         server.responses["/api/v1/evaluate"] = decision(False, retry_after_ms=900)
         status, headers, body = call(app)
         assert status.startswith("429") and headers["Retry-After"] == "1"
+        limiter.flush()
+    report = next(payload for path, payload, _ in server.requests if path == "/api/v1/report")
+    assert report["requests"] == 1
+
+
+def test_wsgi_streams_lazily_closes_the_app_and_records_once(server: FakeServer):
+    from adaptirate.wsgi import AdaptiRateWSGIMiddleware
+
+    class Body:
+        def __init__(self) -> None:
+            self.closed = False
+            self.produced = 0
+
+        def __iter__(self):
+            for chunk in (b"one", b"two"):
+                self.produced += 1
+                yield chunk
+
+        def close(self) -> None:
+            self.closed = True
+
+    body = Body()
+
+    def inner(environ, start_response):
+        start_response("200 OK", [])
+        return body
+
+    with sync_limiter(server) as limiter:
+        app = AdaptiRateWSGIMiddleware(inner, limiter=limiter, policy="api")
+        result = app({"PATH_INFO": "/", "REMOTE_ADDR": "198.51.100.4"}, lambda *a, **k: None)
+        assert body.produced == 0, "nothing is consumed until the server iterates"
+        iterator = iter(result)
+        assert next(iterator) == b"one" and body.produced == 1
+        assert next(iterator) == b"two"
+        with pytest.raises(StopIteration):
+            next(iterator)
+        result.close()  # type: ignore[attr-defined]
+        result.close()  # type: ignore[attr-defined]
+        assert body.closed
+        limiter.flush()
+    reports = [payload for path, payload, _ in server.requests if path == "/api/v1/report"]
+    assert len(reports) == 1 and reports[0]["requests"] == 1
+
+
+def test_wsgi_records_when_the_server_closes_early(server: FakeServer):
+    from adaptirate.wsgi import AdaptiRateWSGIMiddleware
+
+    def inner(environ, start_response):
+        start_response("200 OK", [])
+        return iter([b"a", b"b"])
+
+    with sync_limiter(server) as limiter:
+        app = AdaptiRateWSGIMiddleware(inner, limiter=limiter, policy="api")
+        result = app({"PATH_INFO": "/", "REMOTE_ADDR": "198.51.100.4"}, lambda *a, **k: None)
+        next(iter(result))
+        result.close()  # type: ignore[attr-defined]
         limiter.flush()
     report = next(payload for path, payload, _ in server.requests if path == "/api/v1/report")
     assert report["requests"] == 1

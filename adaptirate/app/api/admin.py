@@ -119,7 +119,10 @@ async def delete_provider(
     )
     await session.commit()
     # Also forget observed quota and lift any pause it caused.
-    pause_keys = [keys.pause_key(p.id) for p in cache.policies.values() if p.provider == name]
-    await redis.unlink(keys.provider_state_key(name), *pause_keys)
+    # Lift pauses and the quota cap now, rather than leaving the reduced limit in place
+    # until the worker's next tick recomputes it.
+    bound = [p.id for p in cache.policies.values() if p.provider == name]
+    stale = [key for pid in bound for key in (keys.pause_key(pid), keys.multiplier_key(pid))]
+    await redis.unlink(keys.provider_state_key(name), *stale)
     await cache.load()
     await publish_invalidation(redis)

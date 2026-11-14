@@ -68,6 +68,8 @@ class Check:
     subject: str
     cost: int = 1
     record: bool = True
+    # False while probing for a lease: a refused probe is not a refused request.
+    record_blocks: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +114,7 @@ class LimiterEngine:
             f"{check.policy_name}|{subject}",
             "1" if check.record else "0",
             check.policy_name,
+            "1" if check.record_blocks else "0",
         ]
         return script_keys, argv
 
@@ -161,6 +164,7 @@ class LimiterEngine:
         against a small or adaptively reduced limit. Unused leased units are simply
         lost: a lease can under-admit but never over-admit.
         """
+        check = replace(check, record_blocks=False)
         decision = await self.check(check)
         if decision.allowed:
             return check.cost, decision

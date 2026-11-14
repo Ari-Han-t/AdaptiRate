@@ -77,6 +77,11 @@ async def create_key(
     excess = set(body.scopes) - principal.scopes
     if excess:
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"You cannot grant: {', '.join(sorted(excess))}")
+    if principal.policy_ids and not (body.policy_ids and set(body.policy_ids) <= principal.policy_ids):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "A key restricted to certain policies can only create keys restricted to those same policies",
+        )
     if body.expires_at is not None and body.expires_at <= datetime.now(UTC):
         raise HTTPException(422, "expires_at must be in the future")
     if body.policy_ids:

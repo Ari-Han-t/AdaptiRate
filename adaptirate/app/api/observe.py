@@ -82,14 +82,21 @@ async def _recent_events(redis: Redis, last_id: str, count: int = 100) -> tuple[
 
 
 async def stream_frames(
-    redis: Redis, cache: RuntimeCache, disconnected: Callable[[], Awaitable[bool]]
+    redis: Redis,
+    cache: RuntimeCache,
+    disconnected: Callable[[], Awaitable[bool]],
+    deadline: float | None = None,
 ) -> AsyncIterator[bytes]:
-    """One metrics frame per second, plus any decisions logged since the previous frame."""
+    """One metrics frame per second, plus any decisions logged since the previous frame.
+
+    Ends at `deadline` (the caller's token expiry). The client reconnects with a fresh
+    token, so a revoked or demoted user stops receiving data within one token lifetime.
+    """
     # Start from the newest event so a new subscriber does not replay history.
     latest = await redis.xrevrange(keys.EVENT_STREAM, count=1)
     last_id = latest[0][0] if latest else "0-0"
     yield b"retry: 2000\n\n"
-    while not await disconnected():
+    while not await disconnected() and (deadline is None or time.time() < deadline):
         started = time.monotonic()
         snapshot = await metrics.live_snapshot(redis, cache)
         yield b"event: metrics\ndata: " + orjson.dumps(snapshot) + b"\n\n"
@@ -102,9 +109,11 @@ async def stream_frames(
 @router.get(
     "/stream", tags=["Metrics"], summary="Server-sent events: one metrics frame per second plus new decisions"
 )
-async def stream(request: Request, _: ReadPrincipal, redis: RedisDep, cache: CacheDep) -> StreamingResponse:
+async def stream(
+    request: Request, principal: ReadPrincipal, redis: RedisDep, cache: CacheDep
+) -> StreamingResponse:
     return StreamingResponse(
-        stream_frames(redis, cache, request.is_disconnected),
+        stream_frames(redis, cache, request.is_disconnected, principal.expires_at),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

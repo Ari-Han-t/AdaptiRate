@@ -23,6 +23,7 @@ import psutil
 from redis.asyncio import Redis
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .adaptive import signals as signal_store
@@ -33,6 +34,7 @@ from .limiter import keys
 from .limiter.cache import RuntimeCache
 from .limiter.policy import CompiledPolicy
 from .models import ApiKey, DecisionLog, MetricRollup, RefreshToken
+from .providers.parsers import refills_continuously
 from .providers.service import ProviderState, state_from_hash
 from .redis_client import close_redis, get_redis
 from .startup import wait_for_dependencies
@@ -155,6 +157,10 @@ class Worker:
                     window_seconds=policy.window_ms / 1000,
                     base_limit=policy.limit,
                     safety_margin=config.provider_safety_margin,
+                    quota_limit=provider.limit(policy.provider_dimension),
+                    continuous=refills_continuously(
+                        provider.name, self.cache.custom_providers.get(provider.name)
+                    ),
                 )
                 if cap is not None:
                     multiplier = min(multiplier, cap)
@@ -225,14 +231,38 @@ class Worker:
                 )
             except (KeyError, ValueError):
                 logger.warning("skipping malformed event %s", _entry_id)
-        if rows:
+        written = await self._insert_logs(rows)
+        # Advance once the batch has been handled; a crash before this re-reads it, so
+        # delivery is at-least-once.
+        await self.redis.set(keys.EVENT_CURSOR, entries[-1][0])
+        self.logs_written += written
+        return written
+
+    async def _insert_logs(self, rows: list[dict[str, Any]]) -> int:
+        """Insert a batch, falling back to one row at a time if the batch is rejected.
+
+        Without the fallback a single unstorable row would fail the whole batch, the
+        cursor would never advance, and the log would stall on that batch forever.
+        """
+        if not rows:
+            return 0
+        try:
             async with self.sessions() as session:
                 await session.execute(insert(DecisionLog), rows)
                 await session.commit()
-        # Advance only after the rows are durable; a crash before this re-reads the batch.
-        await self.redis.set(keys.EVENT_CURSOR, entries[-1][0])
-        self.logs_written += len(rows)
-        return len(rows)
+            return len(rows)
+        except DBAPIError:
+            logger.warning("decision log batch rejected; inserting rows individually", exc_info=True)
+        written = 0
+        for row in rows:
+            try:
+                async with self.sessions() as session:
+                    await session.execute(insert(DecisionLog), [row])
+                    await session.commit()
+                written += 1
+            except DBAPIError:
+                logger.warning("dropping a decision log row the database rejected")
+        return written
 
     # ---- rollups ----------------------------------------------------------
 
