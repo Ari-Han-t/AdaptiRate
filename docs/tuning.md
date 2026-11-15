@@ -63,6 +63,21 @@ SDK (`report_provider`, or the `httpx_hook` helper in Python). AdaptiRate then:
 For an API that is not built in, define which headers carry its quota with
 `PUT /providers/{name}`.
 
+Providers refill their quotas in one of two ways, and pacing differs between them. Set `refill`
+in the header map to say which:
+
+- `continuous` (default): the quota refills steadily and the reset header says when it will be
+  full. Anthropic documents this model. OpenAI does not document its model either way;
+  continuous is assumed, so override it with `PUT /providers/openai` if your usage shows a
+  fixed window. Groq's request headers describe a daily quota and its token headers a
+  per-minute one; both are paced correctly because the pacing divides by the reported time to
+  reset.
+- `window`: nothing comes back until the reset time, as with GitHub's hourly quota.
+
+When a provider refuses without a `Retry-After` (Anthropic's monthly spend cap is one case),
+AdaptiRate backs off exponentially from 2 seconds up to an hour, so a refusal that lasts days is
+retried hourly rather than every minute. Deleting the provider's state lifts the pause at once.
+
 ## The decision log
 
 Counters, analytics and the live charts are always exact. The searchable log is a sample, because

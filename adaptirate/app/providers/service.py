@@ -12,7 +12,6 @@ from ..limiter import keys
 from ..limiter.policy import CompiledPolicy
 from .parsers import BUILTIN, HeaderMap, Observation, parse
 
-MAX_BACKOFF_SECONDS = 60.0
 MAX_PAUSE_SECONDS = 3600.0
 STATE_TTL_SECONDS = 86400
 
@@ -96,7 +95,13 @@ async def get_state(redis: Redis, name: str) -> ProviderState:
 
 def pause_seconds(observation: Observation, consecutive: int) -> float:
     """How long to stop sending after a throttle. Prefers what the provider asked for;
-    otherwise exponential backoff, since retrying immediately only earns another 429."""
+    otherwise exponential backoff, since retrying immediately only earns another 429.
+
+    The backoff keeps doubling up to an hour. Some refusals carry no Retry-After and last
+    a long time (Anthropic's monthly spend cap clears only on the 1st), and a 60-second
+    ceiling would keep probing such a provider every minute indefinitely. One 429 still
+    costs only a 2-second pause; it takes about a dozen in a row to reach the hour.
+    """
     if observation.retry_after_seconds is not None:
         return min(MAX_PAUSE_SECONDS, max(0.1, observation.retry_after_seconds))
     for remaining, reset_in in (
@@ -105,7 +110,7 @@ def pause_seconds(observation: Observation, consecutive: int) -> float:
     ):
         if remaining == 0 and reset_in is not None:
             return min(MAX_PAUSE_SECONDS, max(0.1, reset_in))
-    return min(MAX_BACKOFF_SECONDS, float(2 ** min(consecutive, 6)))
+    return min(MAX_PAUSE_SECONDS, float(2 ** min(max(consecutive, 1), 12)))
 
 
 async def record_response(

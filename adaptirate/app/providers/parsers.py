@@ -53,6 +53,15 @@ _OPENAI_STYLE = HeaderMap(
 )
 
 BUILTIN: dict[str, HeaderMap] = {
+    # Refill model, as documented (checked 2026-11):
+    # - Anthropic states its limits are token buckets, continuously replenished.
+    # - OpenAI documents the headers but not whether quotas refill continuously or in
+    #   fixed windows. Continuous is assumed here, matching observed behaviour. Override
+    #   with PUT /providers/openai {"refill": "window", ...} if that proves wrong.
+    # - Groq's request headers describe a daily quota and its token headers a per-minute
+    #   one. The pacing formula handles either, because it divides by the reported time
+    #   to reset rather than assuming a window length.
+    # - GitHub's quota is a fixed hourly window (refill="window" below).
     "openai": _OPENAI_STYLE,
     "groq": _OPENAI_STYLE,
     "anthropic": HeaderMap(

@@ -153,6 +153,6 @@ def test_pause_prefers_retry_after_then_reset_then_backoff():
     exhausted = Observation(throttled=True, remaining_requests=0, reset_requests_in=42)
     assert pause_seconds(exhausted, 1) == 42
     blind = Observation(throttled=True)
-    assert [pause_seconds(blind, n) for n in (1, 2, 3, 10)] == [2, 4, 8, 60]
+    assert [pause_seconds(blind, n) for n in (1, 2, 3, 6)] == [2, 4, 8, 64]
     # A hostile or broken Retry-After cannot park traffic forever.
     assert pause_seconds(Observation(throttled=True, retry_after_seconds=10**9), 1) == 3600

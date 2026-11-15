@@ -135,7 +135,7 @@ The SDKs are not on PyPI, npm or Maven Central. Install them from this repositor
 
 | What | Count | Runs against |
 |---|---|---|
-| Server tests | 182 | Real Redis and Postgres |
+| Server tests | 185 | Real Redis and Postgres |
 | Python SDK tests | 47 | A fake server and a live one |
 | Node SDK tests | 30 | A fake server and a live one |
 | Java SDK tests | 32 | A fake server, a Spring MVC app and a live server |
@@ -163,6 +163,15 @@ machine, no failed requests.
 
 I set out to reach 50,000 decisions a second. No single mode got there on this machine, and I
 have not measured it on server hardware. Method and commands are in [bench/](bench).
+
+## Related work
+
+None of the individual ideas here is new. Shared Redis-backed limits are in nearly every library
+and gateway; adaptive concurrency is in Netflix's concurrency-limits, Envoy and Alibaba Sentinel;
+AI gateways such as LiteLLM limit calls to model providers. What I could not find in a maintained
+open-source project was a shared limit that adapts to service health, or pacing from a
+provider's own quota headers before it refuses. The closest, FluxNinja Aperture, has been
+dormant since 2024. The survey, with sources, is in [docs/landscape.md](docs/landscape.md).
 
 ## Limitations
 
