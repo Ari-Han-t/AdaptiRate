@@ -10,11 +10,12 @@ I built it because the limiters I had used all enforced a number somebody guesse
 number was wrong whenever the service was having a bad day, and it knew nothing about the
 OpenAI quota that ten workers were spending at the same time.
 
-![The dashboard just after a slow spell: the limit for demo-api is at 14 of 20 per second and recovering](docs/images/01-dashboard.png)
+![The dashboard while the demo service slows down and recovers: the limit for demo-api falls from 20 to 2 per second and climbs back to 20 without anyone touching it](docs/images/adaptive.gif)
 
-Above: the bundled demo just after a simulated slow dependency. While latency was high the limit
-for `demo-api` was cut well below its configured 20 per second; here it is back up to 14 and
-still climbing. Nobody touched it.
+Above: the bundled demo, recorded in real time and shown at five times speed. When the service
+behind the limiter slows down by 450 ms per request, the limit for `demo-api` falls from 20 to 2
+requests per second within 15 seconds. When the service recovers, the limit climbs back to 20 in
+about 25 seconds. Nobody touched it.
 
 ## How it works
 
