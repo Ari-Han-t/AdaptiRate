@@ -41,7 +41,8 @@ poor, a small additive increase when it is good, nothing in between. For a polic
 upstream provider, the limit is also capped by that provider's remaining quota, and paused
 outright when the provider answers 429 with `Retry-After`.
 
-More detail in [docs/architecture.md](docs/architecture.md).
+More detail in [docs/architecture.md](docs/architecture.md). For why it is built this way, and
+the bugs that tested each decision, see [docs/design-notes.md](docs/design-notes.md).
 
 ## Try it
 
@@ -198,11 +199,11 @@ sdk-java/       client; Spring Boot starter with @AdaptiveRateLimit
 examples/       the same integration in six frameworks, and the demo
 acceptance/     end-to-end scenarios against real services
 bench/          benchmark method and results
-docs/           architecture, API reference, deployment, tuning
+docs/           design notes, architecture, API reference, deployment, tuning
 ```
 
-Further reading: [architecture](docs/architecture.md), [API reference](docs/api.md),
-[deployment](docs/deployment.md), [tuning](docs/tuning.md).
+Further reading: [design notes](docs/design-notes.md), [architecture](docs/architecture.md),
+[API reference](docs/api.md), [deployment](docs/deployment.md), [tuning](docs/tuning.md).
 
 ## License
 
