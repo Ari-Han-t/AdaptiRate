@@ -1,7 +1,7 @@
 # NestJS
 
 ```bash
-npm install /path/to/AdaptiRate/sdk-node
+npm install @adaptirate/sdk
 ```
 
 **app.module.ts**

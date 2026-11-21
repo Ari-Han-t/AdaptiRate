@@ -1,6 +1,6 @@
 """An existing Flask service with AdaptiRate added.
 
-    pip install flask ../../sdk-python
+    pip install flask adaptirate
     ADAPTIRATE_API_KEY=ar_... ADAPTIRATE_URL=http://localhost:8080 flask --app app run
 
 Needs a policy named "flask-api" scoped "Per user" (create it in the dashboard).

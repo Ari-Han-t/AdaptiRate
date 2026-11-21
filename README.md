@@ -1,6 +1,8 @@
 # AdaptiRate
 
 [![CI](https://github.com/Ari-Han-t/AdaptiRate/actions/workflows/ci.yml/badge.svg)](https://github.com/Ari-Han-t/AdaptiRate/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/adaptirate)](https://pypi.org/project/adaptirate/)
+[![npm](https://img.shields.io/npm/v/@adaptirate/sdk)](https://www.npmjs.com/package/@adaptirate/sdk)
 
 A rate limiter you host yourself, where the limit is not a constant. It is shared across every
 process that uses it, it tightens when the service behind it gets slow or starts failing, and it
@@ -110,8 +112,8 @@ if not decision.allowed:
 Over-limit callers get a 429 with `Retry-After` and `X-RateLimit-*` headers. There are fuller
 examples for FastAPI, Flask, Django, Express, NestJS and Spring Boot in [examples/](examples).
 
-The SDKs are not on PyPI, npm or Maven Central. Install them from this repository:
-`pip install ./sdk-python`, `npm install ./sdk-node`, or `mvn install` in `sdk-java`.
+Install the SDKs with `pip install adaptirate` or `npm install @adaptirate/sdk`. The Java SDK is
+not on Maven Central yet; run `mvn install` in `sdk-java`.
 
 ## What is in it
 

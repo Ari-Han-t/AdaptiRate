@@ -33,7 +33,7 @@ Where AdaptiRate is weaker:
   cache, or route.
 - It needs a single Redis, with no Redis Cluster support.
 - It has never run in production.
-- Its SDKs are not published to package registries.
+- Its Java SDK is not on Maven Central (the Python and Node SDKs are on PyPI and npm).
 
 ## Libraries
 

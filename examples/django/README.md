@@ -3,7 +3,7 @@
 Add AdaptiRate to an existing Django project in two steps.
 
 ```bash
-pip install /path/to/AdaptiRate/sdk-python
+pip install adaptirate
 ```
 
 **settings.py**
