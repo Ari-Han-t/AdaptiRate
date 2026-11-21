@@ -163,8 +163,24 @@ machine, no failed requests.
 | Batch of 100 | about 36,000 per second | One HTTP call per hundred decisions |
 | Leased | about 42,500 per second per SDK process | Decided in your process; a limit change takes up to 2 s to reach it |
 
-I set out to reach 50,000 decisions a second. No single mode got there on this machine, and I
-have not measured it on server hardware. Method and commands are in [bench/](bench).
+Single checks scale with API worker processes, because the cost is Python request handling,
+not Redis:
+
+```mermaid
+xychart-beta
+    title "Single checks per second by API workers (4-core laptop)"
+    x-axis ["1 worker", "2 workers", "4 workers"]
+    y-axis "checks / sec" 0 --> 3200
+    bar [723, 1540, 2909]
+```
+
+At 2,400 checks a second Redis used 22% of one core while the API processes used 3.3 cores, so a
+single Redis has room for several times this load; more throughput means more API processes or
+machines. Past one worker per core the laptop saturates (8 workers gave 2,379 a second).
+
+I set out to reach 50,000 decisions a second. Batch and leased modes get within reach of that on
+this laptop; single checks would need about 17 API cores at the measured rate, which I have not
+tested. Method and commands are in [bench/](bench).
 
 ## Related work
 

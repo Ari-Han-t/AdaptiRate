@@ -25,6 +25,27 @@ Reading these honestly:
   machine. Batch and leased modes are within reach of it on server hardware; that has not been
   measured.
 
+## Scaling with API workers
+
+Same machine, `AR_API_WORKERS` set to 1, 2, 4 and 8, ApacheBench with 32 connections (64 for 8
+workers), 15,000 to 20,000 requests per run after a warm-up, zero failures.
+
+| API workers | Checks per second | p50 | p99 |
+|---|---|---|---|
+| 1 | 723 | 44 ms | 49 ms |
+| 2 | 1,540 | 21 ms | 33 ms |
+| 4 | 2,909 | 10 ms | 26 ms |
+| 8 | 2,379 | 24 ms | 74 ms |
+
+Throughput scales almost linearly up to one worker per core, then falls once processes compete
+for the 4 cores (the load generator shares them too). During the 8-worker run Redis used 22% of
+one core and the API processes 334%, so Redis is not the limit; adding API processes or machines
+is.
+
+```bash
+AR_API_WORKERS=4 docker compose up -d api
+```
+
 ## Reproduce
 
 Start the stack (`docker compose up -d`), create a policy named `bench` with a very high limit
