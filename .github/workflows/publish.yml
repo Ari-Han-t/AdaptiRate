@@ -1,0 +1,93 @@
+name: Publish SDKs
+
+# Publishes the Python SDK to PyPI and the Node SDK to npm when a GitHub release is published.
+# Uses trusted publishing (OpenID Connect): no API tokens are stored in this repository. Each
+# registry must first be told to trust this workflow; see docs/releasing.md.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which registry to publish to
+        type: choice
+        options: [both, pypi, npm]
+        default: both
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: Release tag matches package versions
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: versions
+        run: |
+          python_version=$(grep -m1 '^version' sdk-python/pyproject.toml | cut -d'"' -f2)
+          node_version=$(node -p "require('./sdk-node/package.json').version")
+          echo "python=$python_version node=$node_version ref=${GITHUB_REF_NAME}"
+          if [ "$python_version" != "$node_version" ]; then
+            echo "::error::sdk-python is $python_version but sdk-node is $node_version"; exit 1
+          fi
+          if [ "${GITHUB_EVENT_NAME}" = "release" ] && [ "v$python_version" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::release tag ${GITHUB_REF_NAME} does not match package version v$python_version"; exit 1
+          fi
+          echo "version=$python_version" >> "$GITHUB_OUTPUT"
+
+  pypi:
+    name: PyPI
+    needs: check-version
+    if: github.event_name == 'release' || inputs.target != 'npm'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/adaptirate/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        working-directory: sdk-python
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          twine check dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk-python/dist
+
+  npm:
+    name: npm
+    needs: check-version
+    if: github.event_name == 'release' || inputs.target != 'pypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@adaptirate/sdk
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Use an npm that supports trusted publishing
+        run: npm install -g npm@latest
+      - name: Build and test
+        working-directory: sdk-node
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          npm pack --dry-run
+      - name: Publish
+        working-directory: sdk-node
+        run: npm publish --access public --provenance

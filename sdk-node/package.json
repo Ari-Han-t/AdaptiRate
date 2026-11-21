@@ -3,15 +3,52 @@
   "version": "0.1.0",
   "description": "Node.js SDK for AdaptiRate, the adaptive distributed rate limiter",
   "license": "MIT",
+  "keywords": [
+    "rate-limit",
+    "rate-limiter",
+    "redis",
+    "express",
+    "nestjs",
+    "middleware",
+    "adaptive",
+    "llm"
+  ],
+  "homepage": "https://github.com/Ari-Han-t/AdaptiRate#readme",
+  "bugs": {
+    "url": "https://github.com/Ari-Han-t/AdaptiRate/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ari-Han-t/AdaptiRate.git",
+    "directory": "sdk-node"
+  },
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/src/index.d.ts", "default": "./dist/src/index.js" },
-    "./express": { "types": "./dist/src/express.d.ts", "default": "./dist/src/express.js" },
-    "./nest": { "types": "./dist/src/nest.d.ts", "default": "./dist/src/nest.js" }
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./express": {
+      "types": "./dist/src/express.d.ts",
+      "default": "./dist/src/express.js"
+    },
+    "./nest": {
+      "types": "./dist/src/nest.d.ts",
+      "default": "./dist/src/nest.js"
+    }
   },
-  "files": ["dist/src"],
-  "engines": { "node": ">=18" },
+  "files": [
+    "dist/src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc",
     "test": "tsc && node --test dist/test/*.test.js"
@@ -22,9 +59,15 @@
     "rxjs": ">=7"
   },
   "peerDependenciesMeta": {
-    "@nestjs/common": { "optional": true },
-    "@nestjs/core": { "optional": true },
-    "rxjs": { "optional": true }
+    "@nestjs/common": {
+      "optional": true
+    },
+    "@nestjs/core": {
+      "optional": true
+    },
+    "rxjs": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@nestjs/common": "^11.0.0",
