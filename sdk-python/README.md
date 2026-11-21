@@ -58,8 +58,9 @@ decision = limiter.check("send-email", user=user_id)
 if not decision.allowed:
     ...  # decision.retry_after_ms says when to try again
 
-limiter.acquire("send-email", user=user_id)   # raises RateLimitExceeded instead
-limiter.wait("send-email", user=user_id)      # sleeps until allowed
+limiter.acquire("send-email", user=user_id)  # raises RateLimitExceeded instead
+limiter.wait("send-email", user=user_id)  # sleeps until allowed
+
 
 @limiter.limit("reports", subject=lambda account: {"key": account})
 def build_report(account): ...
