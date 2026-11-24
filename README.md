@@ -4,6 +4,10 @@
 [![PyPI](https://img.shields.io/pypi/v/adaptirate)](https://pypi.org/project/adaptirate/)
 [![npm](https://img.shields.io/npm/v/@adaptirate/sdk)](https://www.npmjs.com/package/@adaptirate/sdk)
 
+**Live demo:** [dashboard](https://dashboard.13-206-56-146.sslip.io) (no sign-in, read-only, with
+simulated traffic) and a [project page](https://adaptirate.13-206-56-146.sslip.io) with setup and
+SDK examples.
+
 A rate limiter you host yourself, where the limit is not a constant. It is shared across every
 process that uses it, it tightens when the service behind it gets slow or starts failing, and it
 paces calls to upstream APIs against the quota they report.
