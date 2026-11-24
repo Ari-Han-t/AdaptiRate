@@ -4,6 +4,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# Optional: sign visitors in to a viewer account (public demo deployments only)
+ARG VITE_DEMO_EMAIL=
+ARG VITE_DEMO_PASSWORD=
 RUN npm run build
 
 FROM nginx:1.27-alpine

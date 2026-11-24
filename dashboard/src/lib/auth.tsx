@@ -14,16 +14,32 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null)
 
+// Public demo deployments set these at build time to sign visitors in automatically.
+// Point them at a viewer account: the dashboard then works read-only with no login screen.
+const DEMO_EMAIL: string | undefined = import.meta.env.VITE_DEMO_EMAIL
+const DEMO_PASSWORD: string | undefined = import.meta.env.VITE_DEMO_PASSWORD
+
+async function demoLogin(): Promise<User | null> {
+  if (!DEMO_EMAIL || !DEMO_PASSWORD) return null
+  try {
+    return await api.login(DEMO_EMAIL, DEMO_PASSWORD)
+  } catch {
+    return null
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     setSignedOutHandler(() => setUser(null))
-    void restoreSession().then((restored) => {
-      setUser(restored)
-      setLoading(false)
-    })
+    void restoreSession()
+      .then((restored) => restored ?? demoLogin())
+      .then((restored) => {
+        setUser(restored)
+        setLoading(false)
+      })
   }, [])
 
   const login = useCallback(async (email: string, password: string) => {

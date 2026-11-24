@@ -19,6 +19,8 @@ from dataclasses import dataclass
 import httpx
 
 TARGET = os.environ.get("TARGET", "http://localhost:8090").rstrip("/")
+# Multiplies every client's rate; lower it to run the demo on a small always-on host.
+RATE_SCALE = float(os.environ.get("RATE_SCALE", "1.0"))
 
 
 @dataclass(frozen=True)
@@ -82,7 +84,7 @@ async def one_request(http: httpx.AsyncClient, client: Client) -> None:
 
 
 async def run_client(http: httpx.AsyncClient, client: Client, factor: float, until: float) -> None:
-    interval = 1 / (client.rate * factor)
+    interval = 1 / (client.rate * factor * RATE_SCALE)
     tasks: set[asyncio.Task[None]] = set()
     next_at = time.monotonic() + random.random() * interval  # noqa: S311
     while time.monotonic() < until:
